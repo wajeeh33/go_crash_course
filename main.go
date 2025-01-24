@@ -2,7 +2,7 @@ package main
 
 import (
 	"fmt"
-	"github.com/wajeeh33/go_crash_course/new"
+	"go_crash_course/new"
 )
 
 
