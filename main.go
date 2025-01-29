@@ -17,6 +17,7 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+	"sort"
 )
 
 type Book struct {
@@ -31,6 +32,11 @@ type Book struct {
 type Repository struct {
 	DB *gorm.DB
 }
+
+type ByID []models.Book
+func (b ByID) Len() int { return len(b) }
+func (b ByID) Less(i, j int) bool { return b[i].ID < b[j].ID } // Ascending order
+func (b ByID) Swap(i, j int)      { b[i], b[j] = b[j], b[i] }
 
 
 // Helper function to write JSON responses
@@ -133,12 +139,16 @@ func (r *Repository) CreateBook(w http.ResponseWriter, req *http.Request) {
 
 
 func (r *Repository) GetBooks(w http.ResponseWriter, req *http.Request)  {
-	bookModels := &[]models.Book{}
-	err := r.DB.Find(bookModels)
+	bookModels := []models.Book{}
+	err := r.DB.Find(&bookModels)
 	if err.Error != nil {
 		http.Error(w, "Unable to fetch books", http.StatusNotFound)
 		return
 	}
+	sort.Sort(sort.Reverse(ByID(bookModels)))
+	//sort.Slice(bookModels, func(i, j int) bool {
+	//	return bookModels[i].ID < bookModels[j].ID
+	//})
 	writeJSON(w, http.StatusOK, map[string]interface{}{"message": "books fetched successfully", "data": bookModels})
 }
 
