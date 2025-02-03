@@ -137,6 +137,7 @@ func (r *Repository) GetBooks(w http.ResponseWriter, req *http.Request) {
 	// Read query parameters
 	author := req.URL.Query().Get("author")
 	title := req.URL.Query().Get("title")
+	publisher := req.URL.Query().Get("publisher")
 	search := req.URL.Query().Get("search") // New search parameter
 
 	// Check for spaces in the author name and handle filtering
@@ -153,15 +154,36 @@ func (r *Repository) GetBooks(w http.ResponseWriter, req *http.Request) {
 		query = query.Where("LOWER(author) LIKE ?", "%"+strings.ToLower(trimmedAuthor)+"%")
 	}
 
-	// Handle title filtering
+	// Check for spaces in the title and handle filtering
 	if title != "" {
-		query = query.Where("LOWER(title) LIKE ?", "%"+strings.ToLower(title)+"%") // Use LIKE for partial matching
+		trimmedTitle := strings.TrimSpace(title)
+		TitleParts := strings.Fields(trimmedTitle)
+
+		if len(TitleParts) == 0 {
+			http.Error(w, "Author name cannot be empty", http.StatusBadRequest)
+			return
+		}
+
+		query = query.Where("LOWER(title) LIKE ?", "%"+strings.ToLower(trimmedTitle)+"%") // Use LIKE for partial matching
+	}
+
+	// Check for spaces in the publisher name and handle filtering
+	if publisher != "" {
+		trimmedPublisher := strings.TrimSpace(publisher)
+		publisherParts := strings.Fields(trimmedPublisher)
+
+		if len(publisherParts) == 0 {
+			http.Error(w, "Author name cannot be empty", http.StatusBadRequest)
+			return
+		}
+
+		query = query.Where("LOWER(publisher) LIKE ?", "%"+strings.ToLower(trimmedPublisher)+"%") // Use LIKE for partial matching
 	}
 
 	// Handle search filtering across both fields
 	if search != "" {
 		trimmedSearch := strings.TrimSpace(search)
-		query = query.Where("LOWER(author) LIKE ? OR LOWER(title) LIKE ?", "%"+strings.ToLower(trimmedSearch)+"%", "%"+strings.ToLower(trimmedSearch)+"%")
+		query = query.Where("LOWER(author) LIKE ? OR LOWER(title) LIKE ? OR LOWER(publisher) LIKE ?", "%"+strings.ToLower(trimmedSearch)+"%", "%"+strings.ToLower(trimmedSearch)+"%" , "%"+strings.ToLower(trimmedSearch)+"%")
 	}
 
 	// Pagination
