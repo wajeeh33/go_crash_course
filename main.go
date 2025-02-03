@@ -15,19 +15,11 @@ import (
 	"github.com/wajeeh33/go_crash_course/models"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 	"sort"
 )
-
-type Book struct {
-	Title string `json:"title"`
-	Author string `json:"author"`
-	Publisher string `json:"publisher"`
-	ImagePath string `json:"image_path"`
-	CreatedAt time.Time `json:"created_at" gorm:"autoCreateTime"`
-	UpdatedAt time.Time `json:"updated_at" gorm:"autoCreateTime"`
-}
 
 type Repository struct {
 	DB *gorm.DB
@@ -138,20 +130,78 @@ func (r *Repository) CreateBook(w http.ResponseWriter, req *http.Request) {
 
 
 
-func (r *Repository) GetBooks(w http.ResponseWriter, req *http.Request)  {
-	bookModels := []models.Book{}
-	err := r.DB.Find(&bookModels)
-	if err.Error != nil {
+func (r *Repository) GetBooks(w http.ResponseWriter, req *http.Request) {
+	var bookModels []models.Book
+	query := r.DB
+
+	// Read query parameters
+	author := req.URL.Query().Get("author")
+	title := req.URL.Query().Get("title")
+	search := req.URL.Query().Get("search") // New search parameter
+
+	// Check for spaces in the author name and handle filtering
+	if author != "" {
+		trimmedAuthor := strings.TrimSpace(author)
+		authorParts := strings.Fields(trimmedAuthor)
+
+		if len(authorParts) == 0 {
+			http.Error(w, "Author name cannot be empty", http.StatusBadRequest)
+			return
+		}
+
+		// Prepare the query for both first and last names
+		query = query.Where("LOWER(author) LIKE ?", "%"+strings.ToLower(trimmedAuthor)+"%")
+	}
+
+	// Handle title filtering
+	if title != "" {
+		query = query.Where("LOWER(title) LIKE ?", "%"+strings.ToLower(title)+"%") // Use LIKE for partial matching
+	}
+
+	// Handle search filtering across both fields
+	if search != "" {
+		trimmedSearch := strings.TrimSpace(search)
+		query = query.Where("LOWER(author) LIKE ? OR LOWER(title) LIKE ?", "%"+strings.ToLower(trimmedSearch)+"%", "%"+strings.ToLower(trimmedSearch)+"%")
+	}
+
+	// Pagination
+	limitStr := req.URL.Query().Get("limit")
+	offsetStr := req.URL.Query().Get("offset")
+
+	// Set default values for limit and offset if not provided
+	if limitStr == "" {
+		limitStr = "10" // Default limit
+	}
+	if offsetStr == "" {
+		offsetStr = "0" // Default offset
+	}
+
+	// Convert limit and offset to int
+	limit, err := strconv.Atoi(limitStr)
+	if err != nil {
+		http.Error(w, "Invalid limit value", http.StatusBadRequest)
+		return
+	}
+
+	offset, err := strconv.Atoi(offsetStr)
+	if err != nil {
+		http.Error(w, "Invalid offset value", http.StatusBadRequest)
+		return
+	}
+
+	// Apply pagination
+	query = query.Limit(limit).Offset(offset)
+
+	// Fetch books
+	if err := query.Find(&bookModels).Error; err != nil {
 		http.Error(w, "Unable to fetch books", http.StatusNotFound)
 		return
 	}
+
+	// Sort and respond
 	sort.Sort(sort.Reverse(ByID(bookModels)))
-	//sort.Slice(bookModels, func(i, j int) bool {
-	//	return bookModels[i].ID < bookModels[j].ID
-	//})
 	writeJSON(w, http.StatusOK, map[string]interface{}{"message": "books fetched successfully", "data": bookModels})
 }
-
 func (r *Repository) GetBook(w http.ResponseWriter, req *http.Request) {
 	bookModel := &models.Book{}
 	vars := mux.Vars(req)
