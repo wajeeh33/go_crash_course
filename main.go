@@ -15,22 +15,20 @@ import (
 	"github.com/wajeeh33/go_crash_course/models"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
+	"sort"
 )
-
-type Book struct {
-	Title string `json:"title"`
-	Author string `json:"author"`
-	Publisher string `json:"publisher"`
-	ImagePath string `json:"image_path"`
-	CreatedAt time.Time `json:"created_at" gorm:"autoCreateTime"`
-	UpdatedAt time.Time `json:"updated_at" gorm:"autoCreateTime"`
-}
 
 type Repository struct {
 	DB *gorm.DB
 }
+
+type ByID []models.Book
+func (b ByID) Len() int { return len(b) }
+func (b ByID) Less(i, j int) bool { return b[i].ID < b[j].ID } // Ascending order
+func (b ByID) Swap(i, j int)      { b[i], b[j] = b[j], b[i] }
 
 
 // Helper function to write JSON responses
@@ -41,6 +39,116 @@ func writeJSON(w http.ResponseWriter, status int, data interface{}) {
 }
 
 const MaxFileSize = 10 * 1024 * 1024 // 10 MB
+
+func (r *Repository) GetBooks(w http.ResponseWriter, req *http.Request) {
+	var bookModels []models.Book
+	query := r.DB
+
+	// Read query parameters
+	author := req.URL.Query().Get("author")
+	title := req.URL.Query().Get("title")
+	publisher := req.URL.Query().Get("publisher")
+	search := req.URL.Query().Get("search") // New search parameter
+
+	// Check for spaces in the author name and handle filtering
+	if author != "" {
+		trimmedAuthor := strings.TrimSpace(author)
+		authorParts := strings.Fields(trimmedAuthor)
+
+		if len(authorParts) == 0 {
+			http.Error(w, "Author name cannot be empty", http.StatusBadRequest)
+			return
+		}
+
+		// Prepare the query for both first and last names
+		query = query.Where("LOWER(author) LIKE ?", "%"+strings.ToLower(trimmedAuthor)+"%")
+	}
+
+	// Check for spaces in the title and handle filtering
+	if title != "" {
+		trimmedTitle := strings.TrimSpace(title)
+		TitleParts := strings.Fields(trimmedTitle)
+
+		if len(TitleParts) == 0 {
+			http.Error(w, "Author name cannot be empty", http.StatusBadRequest)
+			return
+		}
+
+		query = query.Where("LOWER(title) LIKE ?", "%"+strings.ToLower(trimmedTitle)+"%") // Use LIKE for partial matching
+	}
+
+	// Check for spaces in the publisher name and handle filtering
+	if publisher != "" {
+		trimmedPublisher := strings.TrimSpace(publisher)
+		publisherParts := strings.Fields(trimmedPublisher)
+
+		if len(publisherParts) == 0 {
+			http.Error(w, "Author name cannot be empty", http.StatusBadRequest)
+			return
+		}
+
+		query = query.Where("LOWER(publisher) LIKE ?", "%"+strings.ToLower(trimmedPublisher)+"%") // Use LIKE for partial matching
+	}
+
+	// Handle search filtering across both fields
+	if search != "" {
+		trimmedSearch := strings.TrimSpace(search)
+		query = query.Where("LOWER(author) LIKE ? OR LOWER(title) LIKE ? OR LOWER(publisher) LIKE ?", "%"+strings.ToLower(trimmedSearch)+"%", "%"+strings.ToLower(trimmedSearch)+"%" , "%"+strings.ToLower(trimmedSearch)+"%")
+	}
+
+	// Pagination
+	limitStr := req.URL.Query().Get("limit")
+	offsetStr := req.URL.Query().Get("offset")
+
+	// Set default values for limit and offset if not provided
+	if limitStr == "" {
+		limitStr = "10" // Default limit
+	}
+	if offsetStr == "" {
+		offsetStr = "0" // Default offset
+	}
+
+	// Convert limit and offset to int
+	limit, err := strconv.Atoi(limitStr)
+	if err != nil {
+		http.Error(w, "Invalid limit value", http.StatusBadRequest)
+		return
+	}
+
+	offset, err := strconv.Atoi(offsetStr)
+	if err != nil {
+		http.Error(w, "Invalid offset value", http.StatusBadRequest)
+		return
+	}
+
+	// Apply pagination
+	query = query.Limit(limit).Offset(offset)
+
+	// Fetch books
+	if err := query.Find(&bookModels).Error; err != nil {
+		writeJSON(w, http.StatusNotFound, map[string]interface{}{"message": "Unable to fetch books", "data": nil})
+		return
+	}
+
+	// Sort and respond
+	sort.Sort(sort.Reverse(ByID(bookModels)))
+	writeJSON(w, http.StatusOK, map[string]interface{}{"message": "Books fetched successfully", "data": bookModels})
+}
+
+func (r *Repository) GetBook(w http.ResponseWriter, req *http.Request) {
+	bookModel := &models.Book{}
+	vars := mux.Vars(req)
+	id, exists := vars["id"]
+	if !exists || id == "" {
+		http.Error(w, "Book ID is required", http.StatusBadRequest)
+	}
+	err := r.DB.Where("id = ?", id).First(bookModel, id).Error
+	if err != nil {
+		writeJSON(w, http.StatusNotFound, map[string]interface{}{"message": "Book not found", "data": nil})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{"message": "Book fetched successfully", "data": bookModel})
+}
 
 func (r *Repository) CreateBook(w http.ResponseWriter, req *http.Request) {
 	// Parse the incoming multipart form data (including file upload)
@@ -93,7 +201,7 @@ func (r *Repository) CreateBook(w http.ResponseWriter, req *http.Request) {
 		// If the directory doesn't exist, create it
 		err := os.MkdirAll(uploadDir, os.ModePerm)
 		if err != nil {
-			http.Error(w, "Failed to create upload directory", http.StatusInternalServerError)
+			http.Error(w, "Failed to create upload directory", http.StatusBadRequest)
 			return
 		}
 	}
@@ -107,13 +215,13 @@ func (r *Repository) CreateBook(w http.ResponseWriter, req *http.Request) {
 	// Save the file to the local directory
 	out, err := os.Create(imagePath)
 	if err != nil {
-		http.Error(w, "Error while saving image", http.StatusInternalServerError)
+		http.Error(w, "Error while saving image", http.StatusBadRequest)
 		return
 	}
 	defer out.Close()
 	_, err = io.Copy(out, file)
 	if err != nil {
-		http.Error(w, "Error while saving image", http.StatusInternalServerError)
+		http.Error(w, "Error while saving image", http.StatusBadRequest)
 		return
 	}
 
@@ -122,7 +230,7 @@ func (r *Repository) CreateBook(w http.ResponseWriter, req *http.Request) {
 
 	// Save book to the database
 	if err := r.DB.Create(book).Error; err != nil {
-		http.Error(w, "Unable to create book", http.StatusInternalServerError)
+		http.Error(w, "Unable to create book", http.StatusBadRequest)
 		return
 	}
 
@@ -130,31 +238,106 @@ func (r *Repository) CreateBook(w http.ResponseWriter, req *http.Request) {
 	writeJSON(w, http.StatusCreated, map[string]interface{}{"message": "Book created successfully", "data": book})
 }
 
-
-
-func (r *Repository) GetBooks(w http.ResponseWriter, req *http.Request)  {
-	bookModels := &[]models.Book{}
-	err := r.DB.Find(bookModels)
-	if err.Error != nil {
-		http.Error(w, "Unable to fetch books", http.StatusNotFound)
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]interface{}{"message": "books fetched successfully", "data": bookModels})
-}
-
-func (r *Repository) GetBook(w http.ResponseWriter, req *http.Request) {
+func (r *Repository) UpdateBook(w http.ResponseWriter, req *http.Request) {
 	bookModel := &models.Book{}
 	vars := mux.Vars(req)
-	id, exists := vars["id"]
-	if !exists || id == "" {
+
+	// Extract ID from the URL parameters
+	id, idExists := vars["id"]
+
+	// Check if ID is not empty
+	if !idExists || id == "" {
 		http.Error(w, "Book ID is required", http.StatusBadRequest)
-	}
-	err := r.DB.Where("id = ?", id).First(bookModel, id).Error
-	if err != nil {
-		http.Error(w, "Book not found", http.StatusNotFound)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]interface{}{"message": "book fetched successfully", "data": bookModel})
+
+	// Check if the book exists in the database
+	err := r.DB.Where("id = ?", id).First(bookModel).Error
+	if err != nil {
+		writeJSON(w, http.StatusNotFound, map[string]interface{}{"message": "Book not found", "data": nil})
+		return
+	}
+
+	// Parse the incoming multipart form data
+	err = req.ParseMultipartForm(MaxFileSize)
+	if err != nil {
+		http.Error(w, "Unable to parse form data", http.StatusBadRequest)
+		return
+	}
+
+	// Update bookModel fields from form data
+	if title := req.FormValue("title"); title == "" {
+		http.Error(w, "Title cannot be empty", http.StatusBadRequest)
+		return
+	} else {
+		bookModel.Title = &title
+	}
+
+	if author := req.FormValue("author"); author != "" || len(author) == 0 {
+		bookModel.Author = &author
+	}
+
+	if publisher := req.FormValue("publisher"); publisher != "" || len(publisher) == 0 {
+		bookModel.Publisher = &publisher
+	}
+
+	// Handle file upload if provided
+	if file, fileHeader, err := req.FormFile("image_path"); err == nil {
+		defer file.Close()
+
+		// Validate file extension
+		fileExtension := strings.ToLower(filepath.Ext(fileHeader.Filename))
+		validExtensions := []string{".jpg", ".jpeg", ".png"}
+		isValidExtension := false
+		for _, ext := range validExtensions {
+			if fileExtension == ext {
+				isValidExtension = true
+				break
+			}
+		}
+		if !isValidExtension {
+			http.Error(w, "Invalid file extension. Only jpg, jpeg, and png files are allowed", http.StatusBadRequest)
+			return
+		}
+
+		// Validate file size
+		fileSize := fileHeader.Size
+		if fileSize > MaxFileSize {
+			http.Error(w, "File size exceeds the 10 MB limit", http.StatusBadRequest)
+			return
+		}
+
+		// Set local path for the image (inside the "uploads" directory)
+		uploadDir := "uploads/"
+		currentTimestamp := time.Now().Unix() // Unix timestamp
+		imagePath := fmt.Sprintf("%sbook_image_%d%s", uploadDir, currentTimestamp, fileExtension)
+
+		// Save the file to the local directory
+		out, err := os.Create(imagePath)
+		if err != nil {
+			http.Error(w, "Error while saving image", http.StatusBadRequest)
+			return
+		}
+		defer out.Close()
+		_, err = io.Copy(out, file)
+		if err != nil {
+			http.Error(w, "Error while saving image", http.StatusBadRequest)
+			return
+		}
+
+		// Update image path in bookModel
+		bookModel.ImagePath = &imagePath
+	}
+
+	// Update the book record
+	err = r.DB.Save(bookModel).Error
+	if err != nil {
+		http.Error(w, "Unable to update book", http.StatusInternalServerError)
+		return
+	}
+
+	// Return a success message
+	writeJSON(w, http.StatusOK, map[string]interface{}{"message": "Book updated successfully", "data": bookModel})
 }
 
 func (r *Repository) DeleteBook(w http.ResponseWriter, req *http.Request) {
@@ -171,56 +354,18 @@ func (r *Repository) DeleteBook(w http.ResponseWriter, req *http.Request) {
 	// Check if book exists in DB
 	err := r.DB.Where("id = ?", id).First(bookModel).Error
 	if err != nil {
-		http.Error(w, "Book not found", http.StatusNotFound)
+		writeJSON(w, http.StatusNotFound, map[string]interface{}{"message": "Book not found", "data": nil})
 		return
 	}
 
 	// Delete book and check if deletion was successful
 	if r.DB.Delete(bookModel).RowsAffected == 0 {
-		http.Error(w, "Unable to delete book", http.StatusInternalServerError)
+		http.Error(w, "Unable to delete book", http.StatusBadRequest)
 		return
 	}
 
 	// Success response
 	writeJSON(w, http.StatusOK, map[string]string{"message": "Book deleted successfully"})
-}
-
-func (r *Repository) UpdateBook(w http.ResponseWriter, req *http.Request) {
-	bookModel := &models.Book{}
-	vars := mux.Vars(req)
-
-	// Extract both ID and author from the URL parameters
-	id, idExists := vars["id"]
-	author, authorExists := vars["author"]
-
-	// Check if both id and author exist and are not empty
-	if !idExists || id == "" || !authorExists || author == "" {
-		http.Error(w, "Book ID and Author are required", http.StatusBadRequest)
-		return
-	}
-
-	// Check if the book exists in the database
-	err := r.DB.Where("id = ?", id).First(bookModel).Error
-	if err != nil {
-		http.Error(w, "Book not found", http.StatusNotFound)
-		return
-	}
-
-	// Decode the incoming JSON request body
-	if err := json.NewDecoder(req.Body).Decode(&bookModel); err != nil {
-		http.Error(w, "Invalid JSON", http.StatusBadRequest)
-		return
-	}
-
-	// Update the book record
-	err = r.DB.Save(bookModel).Error
-	if err != nil {
-		http.Error(w, "Unable to update book", http.StatusInternalServerError)
-		return
-	}
-
-	// Return a success message
-	writeJSON(w, http.StatusOK, map[string]interface{}{"message": "Book updated successfully", "data": bookModel})
 }
 
 func (r *Repository) DownloadImage(w http.ResponseWriter, req *http.Request) {
@@ -237,13 +382,13 @@ func (r *Repository) DownloadImage(w http.ResponseWriter, req *http.Request) {
 	bookModel := &models.Book{}
 	err := r.DB.Where("id = ?", id).First(bookModel).Error
 	if err != nil {
-		http.Error(w, "Book not found", http.StatusNotFound)
+		writeJSON(w, http.StatusNotFound, map[string]interface{}{"message": "Book not found", "data": nil})
 		return
 	}
 
 	// Check if ImagePath is set
 	if bookModel.ImagePath == nil || *bookModel.ImagePath == "" {
-		http.Error(w, "Image not found", http.StatusNotFound)
+		writeJSON(w, http.StatusNotFound, map[string]interface{}{"message": "Image not found", "data": nil})
 		return
 	}
 
@@ -254,7 +399,6 @@ func (r *Repository) DownloadImage(w http.ResponseWriter, req *http.Request) {
 	// Serve the image file
 	http.ServeFile(w, req, *bookModel.ImagePath)
 }
-
 
 func (r *Repository) SetupRoutes(rts *mux.Router) {
 	rts.HandleFunc("/create_books", r.CreateBook).Methods("POST")
