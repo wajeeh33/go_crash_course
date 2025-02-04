@@ -9,6 +9,7 @@ import (
 	"github.com/gorilla/mux"
 	"github.com/joho/godotenv"
 	"github.com/gorilla/schema"
+	"golang.org/x/crypto/bcrypt"
 	"net/http"
 	"gorm.io/gorm"
 	"github.com/wajeeh33/go_crash_course/storage"
@@ -400,6 +401,70 @@ func (r *Repository) DownloadImage(w http.ResponseWriter, req *http.Request) {
 	http.ServeFile(w, req, *bookModel.ImagePath)
 }
 
+func (r *Repository) CreateUser(w http.ResponseWriter, req *http.Request) {
+	userModel := &models.User{}
+
+	// Decode the request body into the User model
+	if err := json.NewDecoder(req.Body).Decode(&userModel); err != nil {
+		fmt.Println("error decoding request body:", err)
+		http.Error(w, "Invalid input", http.StatusBadRequest)
+		return
+	}
+
+	// Hash the password
+	hashedPassword, err := bcrypt.GenerateFromPassword([]byte(userModel.Password), bcrypt.DefaultCost)
+	if err != nil {
+		http.Error(w, "Error hashing password", http.StatusBadRequest)
+		return
+	}
+
+	// Set the hashed password back to the user model
+	userModel.Password = string(hashedPassword) // No need for pointer here
+
+	// Create the user in the database
+	if err := r.DB.Create(&userModel).Error; err != nil {
+		http.Error(w, "Unable to create user", http.StatusBadRequest)
+		return
+	}
+
+	// Assign a default role (e.g., "admin") to the new user
+	userRole := models.UserRole{UserID: userModel.ID, RoleID: "admin"} // Adjust this line
+	if err := r.DB.Create(&userRole).Error; err != nil {
+		http.Error(w, "Unable to assign role to user", http.StatusBadRequest)
+		return
+	}
+
+	// Get the user roles to return them in the response
+	var userRoles []models.UserRole
+	if err := r.DB.Preload("Role").Where("user_id = ?", userModel.ID).Find(&userRoles).Error; err != nil {
+		http.Error(w, "Unable to retrieve user roles", http.StatusBadRequest)
+		return
+	}
+
+	// Return successful response
+	writeJSON(w, http.StatusCreated, map[string]interface{}{
+		"data":       userModel,
+		"user_roles": userRoles,
+		"message":    "User created successfully",
+	})
+}
+
+func MigrateAll(db *gorm.DB) error {
+	if err := models.MigrateUser(db); err != nil {
+		return err
+	}
+	if err := models.MigrateRole(db); err != nil {
+		return err
+	}
+	if err := models.MigrateUserRole(db); err != nil {
+		return err
+	}
+	if err := models.MigrateBook(db); err != nil {
+		return err
+	}
+	return nil
+}
+
 func (r *Repository) SetupRoutes(rts *mux.Router) {
 	rts.HandleFunc("/create_books", r.CreateBook).Methods("POST")
 	rts.HandleFunc("/delete_books/{id}", r.DeleteBook).Methods("DELETE")
@@ -407,6 +472,7 @@ func (r *Repository) SetupRoutes(rts *mux.Router) {
 	rts.HandleFunc("/books", r.GetBooks).Methods("GET")
 	rts.HandleFunc("/get_books/{id}", r.GetBook).Methods("GET")
 	rts.HandleFunc("/download_image/{id}", r.DownloadImage).Methods("GET")
+	rts.HandleFunc("/create_user", r.CreateUser).Methods("POST")
 
 }
 
@@ -430,8 +496,7 @@ func main(){
 		log.Fatal("could not connect to database")
 	}
 
-	err = models.MigrateBook(db)
-	if err != nil {
+	if err := MigrateAll(db); err != nil {
 		log.Fatal("could not migrate database")
 	}
 
