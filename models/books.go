@@ -12,7 +12,6 @@ type Book struct {
 	Publisher *string   `json:"publisher"`
 	ImagePath *string   `json:"image_path"`
 	UserID    uint      `json:"user_id"` // Foreign key to associate book with a user
-	User      User      `json:"user" gorm:"foreignKey:UserID"` // Define the relationship with User
 	CreatedAt time.Time  `json:"created_at" gorm:"autoCreateTime"`
 	UpdatedAt time.Time  `json:"updated_at" gorm:"autoUpdateTime"`
 }
@@ -23,4 +22,9 @@ func MigrateBook(db *gorm.DB) error {
 		return err
 	}
 	return nil
+}
+
+// Implement GetID() for Book
+func (b Book) GetID() uint {
+	return b.ID
 }

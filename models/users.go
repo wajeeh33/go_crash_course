@@ -16,6 +16,21 @@ type User struct {
 	UpdatedAt time.Time   `json:"updated_at" gorm:"autoUpdateTime"`
 }
 
+func (u *User) IsAdmin() bool {
+	for _, userRole := range u.UserRoles {
+		if userRole.RoleID == "admin" {
+			return true
+		}
+	}
+	return false
+}
+
+// Implement GetID() for User
+func (u User) GetID() uint {
+	return u.ID
+}
+
+
 func MigrateUser(db *gorm.DB) error {
 	err := db.AutoMigrate(&User{})
 	if err != nil {
