@@ -3,6 +3,8 @@ package main
 
 import (
 	"context"
+	"encoding/hex"
+	"crypto/rand"
 	"io"
 	"log"
 	"encoding/json"
@@ -16,11 +18,12 @@ import (
 	"gorm.io/gorm"
 	"github.com/wajeeh33/go_crash_course/storage"
 	"github.com/wajeeh33/go_crash_course/models"
+	"net/smtp"
 	"os"
 	"path/filepath"
+	//"regexp"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 	"sort"
 )
@@ -166,7 +169,6 @@ func (r *Repository) CreateBook(w http.ResponseWriter, req *http.Request) {
 		http.Error(w, "Unauthorized", http.StatusUnauthorized)
 		return
 	}
-	fmt.Println("user", user)
 	// Check if the user is an admin
 	if !user.IsAdmin() {
 		http.Error(w, "Forbidden: Only admins can create books", http.StatusForbidden)
@@ -500,7 +502,7 @@ func (r *Repository) GetUserProfile(w http.ResponseWriter, req *http.Request) {
 	}
 
 	// Get the user roles to return them in the response
-	var userRoles []models.UserRole
+	 userRoles:= []models.UserRole{}
 	if err := r.DB.Preload("Role").Where("user_id = ?", userModel.ID).Find(&userRoles).Error; err != nil {
 		http.Error(w, "Unable to retrieve user roles", http.StatusBadRequest)
 		return
@@ -604,8 +606,8 @@ func (r *Repository) GetUsers(w http.ResponseWriter, req *http.Request) {
 func (r *Repository) Login(w http.ResponseWriter, req *http.Request) {
 	userModel := &models.User{}
 	var credentials struct {
-		Email    string `json:"email"`
-		Password string `json:"password"`
+		Email       string `json:"email"`
+		PhoneNumber string `json:"phone_number"`
 	}
 
 	// Decode the request body
@@ -614,11 +616,25 @@ func (r *Repository) Login(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	// Find user in the database
-	err := r.DB.Where("email = ?", credentials.Email).First(userModel).Error
-	if err != nil {
-		writeJSON(w, http.StatusNotFound, map[string]interface{}{"message": "User not found", "data": nil})
+	// Validate that at least one of Email or PhoneNumber is provided
+	if credentials.Email == "" && credentials.PhoneNumber == "" {
+		http.Error(w, "Either Email ID or Phone number is required", http.StatusBadRequest)
 		return
+	}
+
+	// Find user in the database using either Email or PhoneNumber
+	if credentials.Email != "" {
+		err := r.DB.Where("email = ?", credentials.Email).First(userModel).Error
+		if err != nil {
+			writeJSON(w, http.StatusNotFound, map[string]interface{}{"message": "User not found", "data": nil})
+			return
+		}
+	} else {
+		err := r.DB.Where("phone_number = ?", credentials.PhoneNumber).First(userModel).Error
+		if err != nil {
+			writeJSON(w, http.StatusNotFound, map[string]interface{}{"message": "User not found", "data": nil})
+			return
+		}
 	}
 
 	UserRoles := []models.UserRole{}
@@ -627,26 +643,39 @@ func (r *Repository) Login(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	// Compare password with hashed password
-	if err := bcrypt.CompareHashAndPassword([]byte(userModel.Password), []byte(credentials.Password)); err != nil {
-		writeJSON(w, http.StatusUnauthorized, map[string]interface{}{"message": "Invalid credentials", "data": nil})
+	// Update user fields
+	now := time.Now().UTC()
+
+	if userModel.Status == "non_active" {
+			userModel.ActiveOn = &now
+	}
+	userModel.Status = "active"
+	userModel.LastActive = &now
+
+	// Check if user already has a token
+	if userModel.Token == "" {
+		// Generate JWT token
+		token, err := generateJWT(strconv.FormatUint(uint64(userModel.ID), 10))
+		if err != nil {
+			http.Error(w, "Error generating token", http.StatusBadRequest)
+			return
+		}
+
+		// Save the token in the user record
+		userModel.Token = token
+	}
+
+	// Save updated user information
+	if err := r.DB.Save(userModel).Error; err != nil {
+		http.Error(w, "Error saving user record", http.StatusBadRequest)
 		return
 	}
 
-
-	// Generate JWT token
-	token, err := generateJWT(strconv.FormatUint(uint64(userModel.ID), 10))
-	if err != nil {
-		http.Error(w, "Error generating token", http.StatusBadRequest)
-		return
-	}
-
-	// Respond with token
+	// Respond with token and user info
 	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"data":    userModel,
+		"data":       userModel,
 		"user_roles": UserRoles,
-		"message": "Login successful",
-		"token":   token,
+		"message":    "Login successful",
 	})
 }
 
@@ -665,38 +694,238 @@ func (r *Repository) Logout(w http.ResponseWriter, req *http.Request) {
 
 	tokenString := parts[1]
 
-	// Parse token to get expiration time
+	// Retrieve user from the database using the token
+	user := &models.User{}
+	err := r.DB.Where("token = ?", tokenString).First(user).Error
+	if err != nil {
+		http.Error(w, "Invalid token", http.StatusUnauthorized)
+		return
+	}
+
+	// Check if the token is expired
 	claims := &jwt.MapClaims{}
 	token, err := jwt.ParseWithClaims(tokenString, claims, func(token *jwt.Token) (interface{}, error) {
 		return []byte(os.Getenv("JWT_SECRET")), nil
 	})
 
 	if err != nil || !token.Valid {
-		http.Error(w, "Invalid token", http.StatusUnauthorized)
+		// Token is invalid; remove it from the database
+		user.Token = ""
+		r.DB.Save(user)
+		writeJSON(w, http.StatusUnauthorized, map[string]interface{}{"message": "Token is expired or invalid"})
 		return
 	}
 
-	exp, ok := (*claims)["exp"].(float64)
-	if !ok {
-		http.Error(w, "Invalid token claims", http.StatusUnauthorized)
+	// Token is valid; remove it from the database
+	user.Token = ""
+	if err := r.DB.Save(user).Error; err != nil {
+		http.Error(w, "Error removing token from user record", http.StatusInternalServerError)
 		return
 	}
-
-	expirationTime := time.Unix(int64(exp), 0)
-
-	// Store the token in the blacklist map
-	blacklistMutex.Lock()
-	blacklistedTokens[tokenString] = expirationTime
-	blacklistMutex.Unlock()
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"message": "Logout successful",
 	})
 }
 
+func (r *Repository) Register(w http.ResponseWriter, req *http.Request) {
+	userModel := &models.User{}
+
+	// Decode the request body into the User model
+	if err := json.NewDecoder(req.Body).Decode(&userModel); err != nil {
+		http.Error(w, "Invalid input", http.StatusBadRequest)
+		return
+	}
+
+	// Hash the password
+	hashedPassword, err := bcrypt.GenerateFromPassword([]byte(userModel.Password), bcrypt.DefaultCost)
+	if err != nil {
+		http.Error(w, "Error hashing password", http.StatusBadRequest)
+		return
+	}
+
+	// Set the hashed password back to the user model
+	userModel.Password = string(hashedPassword)
+	// Set ActiveOn and LastActive to nil
+	userModel.ActiveOn = nil
+	userModel.LastActive = nil
+
+	// Create the user in the database
+	if err := r.DB.Create(&userModel).Error; err != nil {
+		http.Error(w, "Email is already taken. Please chose a different one.", http.StatusBadRequest)
+		return
+	}
+
+	// Assign a default role (e.g., "admin") to the new user
+	userRole := models.UserRole{UserID: userModel.ID, RoleID: "user"} // Adjust this line
+	if err := r.DB.Create(&userRole).Error; err != nil {
+		http.Error(w, "Unable to assign role to user", http.StatusBadRequest)
+		return
+	}
+
+	// Get the user roles to return them in the response
+	 userRoles := []models.UserRole{}
+	if err := r.DB.Preload("Role").Where("user_id = ?", userModel.ID).Find(&userRoles).Error; err != nil {
+		http.Error(w, "Unable to retrieve user roles", http.StatusBadRequest)
+		return
+	}
+
+	if err := r.DB.Save(userModel).Error; err != nil {
+		http.Error(w, "Error saving token to user record", http.StatusBadRequest)
+		return
+	}
+
+	// Return successful response with user data
+	writeJSON(w, http.StatusCreated, map[string]interface{}{
+		"data":    userModel,
+        "Role": userRoles[0].Role,
+		"message": "User registered successfully",
+	})
+}
+
+func (r *Repository) ForgetPassword(w http.ResponseWriter, req *http.Request) {
+	user := &models.User{}
+	var request struct {
+		Email string `json:"email"`
+		PhoneNumber string `json:"phone_number"`
+	}
+	if err := json.NewDecoder(req.Body).Decode(&request); err != nil {
+		http.Error(w, "Invalid input", http.StatusBadRequest)
+		return
+	}
+
+	// Validate that at least one of Email or PhoneNumber is provided
+	if request.Email == "" && request.PhoneNumber == "" {
+		http.Error(w, "Either Email ID or Phone number is required", http.StatusBadRequest)
+		return
+	}
+
+
+	//// Validate email using the model's emailRegex function
+	//if emailRegex(request.Email) {
+	//
+	//	http.Error(w, "Invalid email format", http.StatusBadRequest)
+	//	return
+	//}
+	//// Validate email using the model's emailRegex function
+	//if phoneNumberRegex(request.PhoneNumber) {
+	//	http.Error(w, "Invalid phone number format", http.StatusBadRequest)
+	//	return
+	//}
+
+	if err := r.DB.Where("email = ?", request.Email).First(user).Error; err != nil {
+		http.Error(w, "User not found", http.StatusNotFound)
+		return
+	}
+
+	// Generate a unique reset token
+	resetToken := make([]byte, 32) // 32 bytes = 256 bits
+	if _, err := rand.Read(resetToken); err != nil {
+		http.Error(w, "Error generating reset token", http.StatusBadRequest)
+		return
+	}
+	tokenString := hex.EncodeToString(resetToken)
+
+	// Save the token in the database (you might want to create a separate table for reset tokens)
+	user.ResetToken = tokenString // Assuming you have added ResetToken field in the User model
+	if err := r.DB.Save(user).Error; err != nil {
+		fmt.Println("error reset token ", err)
+		http.Error(w, "Error saving reset token", http.StatusBadRequest)
+		return
+	}
+
+	// Send reset password email
+	resetLink := fmt.Sprintf("http://localhost:8000/reset_password?token=%s", tokenString)
+	fmt.Println("resetLink ==>", resetLink)
+	if err := sendResetEmail(user.Name, request.Email, resetLink); err != nil {
+		fmt.Println("error => ", err)
+		http.Error(w, "Error sending email", http.StatusBadRequest)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{"message": "Reset link sent to email."})
+}
+
+func (r *Repository) ResetPassword(w http.ResponseWriter, req *http.Request) {
+	var request struct {
+		Token    string `json:"token"`
+		Password string `json:"password"`
+	}
+
+	if err := json.NewDecoder(req.Body).Decode(&request); err != nil {
+		http.Error(w, "Invalid input", http.StatusBadRequest)
+		return
+	}
+
+	// Find user by reset token
+	user := &models.User{}
+	if err := r.DB.Where("reset_token = ?", request.Token).First(user).Error; err != nil {
+		http.Error(w, "Invalid or expired token", http.StatusUnauthorized)
+		return
+	}
+
+	// Hash the new password
+	hashedPassword, err := bcrypt.GenerateFromPassword([]byte(request.Password), bcrypt.DefaultCost)
+	if err != nil {
+		http.Error(w, "Error hashing password", http.StatusInternalServerError)
+		return
+	}
+
+	// Update the user's password
+	user.Password = string(hashedPassword)
+	user.ResetToken = ""
+
+	if err := r.DB.Save(user).Error; err != nil {
+		http.Error(w, "Error updating password", http.StatusInternalServerError)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{"message": "Password has been reset."})
+}
+
+func (r *Repository) ChangePassword(w http.ResponseWriter, req *http.Request) {
+	user, err := extractUserFromJWT(req, r.DB)
+	if err != nil {
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	var request struct {
+		OldPassword string `json:"old_password"`
+		NewPassword string `json:"new_password"`
+	}
+
+	if err := json.NewDecoder(req.Body).Decode(&request); err != nil {
+		http.Error(w, "Invalid input", http.StatusBadRequest)
+		return
+	}
+
+	// Validate old password
+	if err := bcrypt.CompareHashAndPassword([]byte(user.Password), []byte(request.OldPassword)); err != nil {
+		writeJSON(w, http.StatusUnauthorized, map[string]interface{}{"message": "Invalid old password"})
+		return
+	}
+
+	// Hash the new password
+	hashedPassword, err := bcrypt.GenerateFromPassword([]byte(request.NewPassword), bcrypt.DefaultCost)
+	if err != nil {
+		http.Error(w, "Error hashing new password", http.StatusBadRequest)
+		return
+	}
+
+	// Update the user's password
+	user.Password = string(hashedPassword)
+	if err := r.DB.Save(user).Error; err != nil {
+		http.Error(w, "Error updating password", http.StatusInternalServerError)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{"message": "Password changed successfully"})
+}
+
 func (r *Repository) AuthMiddleware(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		authHeader := r.Header.Get("Authorization")
+	return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		authHeader := req.Header.Get("Authorization")
 		if authHeader == "" {
 			http.Error(w, "Missing token", http.StatusUnauthorized)
 			return
@@ -710,34 +939,38 @@ func (r *Repository) AuthMiddleware(next http.Handler) http.Handler {
 
 		tokenString := parts[1]
 
-		// Check if token is blacklisted
-		blacklistMutex.Lock()
-		expTime, exists := blacklistedTokens[tokenString]
-		blacklistMutex.Unlock()
-
-		if exists && time.Now().Before(expTime) {
-			http.Error(w, "Token has been revoked", http.StatusUnauthorized)
+		// Fetch user from the database using the token
+		user := &models.User{}
+		err := r.DB.Where("token = ?", tokenString).First(user).Error
+		if err != nil {
+			http.Error(w, "Invalid token", http.StatusUnauthorized)
 			return
 		}
 
+		// Check if the token is expired
 		claims := &jwt.MapClaims{}
 		token, err := jwt.ParseWithClaims(tokenString, claims, func(token *jwt.Token) (interface{}, error) {
 			return []byte(os.Getenv("JWT_SECRET")), nil
 		})
 
 		if err != nil || !token.Valid {
-			http.Error(w, "Invalid token", http.StatusUnauthorized)
+			// Token is invalid; remove it from the database
+			user.Token = ""
+			r.DB.Save(user)
+			http.Error(w, "Token is expired or invalid", http.StatusUnauthorized)
 			return
 		}
 
+		// Extract user ID from claims
 		userID, ok := (*claims)["user_id"].(string)
 		if !ok {
 			http.Error(w, "Invalid token claims", http.StatusUnauthorized)
 			return
 		}
 
-		ctx := context.WithValue(r.Context(), "user_id", userID)
-		next.ServeHTTP(w, r.WithContext(ctx))
+		// Store the user ID in the context
+		ctx := context.WithValue(req.Context(), "user_id", userID)
+		next.ServeHTTP(w, req.WithContext(ctx))
 	})
 }
 
@@ -746,9 +979,6 @@ func extractUserFromJWT(req *http.Request, db *gorm.DB) (*models.User, error) {
 	if tokenString == "" {
 		return nil, fmt.Errorf("missing token")
 	}
-
-	fmt.Println("Received Token:", tokenString) // Debug print
-
 	// Ensure "Bearer " prefix is removed
 	tokenString = strings.TrimPrefix(tokenString, "Bearer ")
 
@@ -757,38 +987,53 @@ func extractUserFromJWT(req *http.Request, db *gorm.DB) (*models.User, error) {
 		return []byte(os.Getenv("JWT_SECRET")), nil // Ensure you are using the correct secret key
 	})
 	if err != nil || !token.Valid {
-		fmt.Println("JWT Parse Error:", err) // Debug print
 		return nil, fmt.Errorf("invalid token")
 	}
 
 	// Extract claims
 	claims, ok := token.Claims.(jwt.MapClaims)
 	if !ok {
-		fmt.Println("Invalid Claims")
 		return nil, fmt.Errorf("invalid claims")
 	}
 
-	fmt.Println("Extracted Claims:", claims) // Debug print
 
 	// Extract user_id
 	userID, ok := claims["user_id"].(string)
 	if !ok {
-		fmt.Println("Invalid user_id claim")
 		return nil, fmt.Errorf("invalid user_id claim")
 	}
-
-	fmt.Println("Extracted User ID:", userID) // Debug print
 
 	// Fetch user from DB
 	var user models.User
 	err = db.Preload("UserRoles").Where("id = ?", userID).First(&user).Error
 	if err != nil {
-		fmt.Println("User Not Found in DB:", err) // Debug print
 		return nil, fmt.Errorf("user not found")
 	}
-
-	fmt.Println("Extracted User:", user) // Debug print
 	return &user, nil
+}
+
+// sendResetEmail sends the reset password email
+func sendResetEmail(name, to, resetLink string) error {
+	from := "barkahw32@gmail.com"
+	password := os.Getenv("EMAIL_PASSWORD")
+	fmt.Println("EMAIL_PASSWORD:", password)
+	hostEmail := "smtp.gmail.com"
+	smtpPort := "587"
+
+	// Set up authentication information.
+	auth := smtp.PlainAuth("", from, password, hostEmail)
+
+	// Message
+	subject := "Password Reset Request"
+	body := fmt.Sprintf("Hello %s,\n\nClick the link to reset your password: %s\n\nThank you!", name, resetLink)
+	msg := []byte("To: " + to + "\r\n" +
+		"Subject: " + subject + "\r\n" +
+		"\r\n" +
+		body + "\r\n")
+
+	// Connect to the server, authenticate, and send the email
+	err := smtp.SendMail(hostEmail+":"+smtpPort, auth, from, []string{to}, msg)
+	return err
 }
 
 func MigrateAll(db *gorm.DB) error {
@@ -807,13 +1052,25 @@ func MigrateAll(db *gorm.DB) error {
 	return nil
 }
 
-var blacklistedTokens = make(map[string]time.Time)
-var blacklistMutex sync.Mutex
+//// Email validation regex
+//func emailRegex(email string) bool {
+//	re := regexp.MustCompile(`^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$`)
+//	fmt.Println("regs => ", re)
+//	return re.MatchString(email)
+//}
+
+// Phone number validation regex
+//func phoneNumberRegex(phone string) bool {
+//	re := regexp.MustCompile(`^\+\d{8,15}$`)
+//	return re.MatchString(phone)
+//}
 
 func (r *Repository) SetupRoutes(rts *mux.Router) {
 	// Public routes
+	rts.HandleFunc("/register", r.Register).Methods("POST") // Registration endpoint
 	rts.HandleFunc("/login", r.Login).Methods("POST")
 	rts.HandleFunc("/create_user", r.CreateUser).Methods("POST")
+	rts.HandleFunc("/forget_password", r.ForgetPassword).Methods("POST")
 
 	// Protected routes
 	protected := rts.PathPrefix("/api").Subrouter()
@@ -827,6 +1084,8 @@ func (r *Repository) SetupRoutes(rts *mux.Router) {
 	protected.HandleFunc("/logout", r.Logout).Methods("POST")
 	protected.HandleFunc("/profile/{id}", r.GetUserProfile).Methods("GET")
 	protected.HandleFunc("/users", r.GetUsers).Methods("GET")
+	protected.HandleFunc("/reset_password", r.ResetPassword).Methods("POST")
+	protected.HandleFunc("/change_password", r.ChangePassword).Methods("POST")
 
 }
 
@@ -860,6 +1119,13 @@ func main(){
 		DBName:   os.Getenv("DB_NAME"),
 		SSLMode:  os.Getenv("SSL_MODE"),
 	}
+
+	//hashedPassword, err := bcrypt.GenerateFromPassword([]byte("123456789"), bcrypt.DefaultCost)
+	//if err != nil {
+	//	fmt.Println("Error hashing password:", err)
+	//	return
+	//}
+	//fmt.Println("Hashed Password:", string(hashedPassword))
 
 	db, err := storage.NewConnection(config)
 	if err != nil {
