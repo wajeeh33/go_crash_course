@@ -841,7 +841,7 @@ func (r *Repository) ForgetPassword(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	writeJSON(w, http.StatusOK, map[string]interface{}{"message": "Reset link sent to email."})
+	writeJSON(w, http.StatusOK, map[string]interface{}{"message": "Reset password link sent to" + " " + user.Name})
 }
 
 func (r *Repository) ResetPassword(w http.ResponseWriter, req *http.Request) {
