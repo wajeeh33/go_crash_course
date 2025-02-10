@@ -9,6 +9,8 @@ import (
 	"log"
 	"encoding/json"
     "github.com/golang-jwt/jwt/v5"
+	"github.com/sendgrid/sendgrid-go"
+	"github.com/sendgrid/sendgrid-go/helpers/mail"
     "fmt"
 	"github.com/gorilla/mux"
 	"github.com/joho/godotenv"
@@ -18,7 +20,6 @@ import (
 	"gorm.io/gorm"
 	"github.com/wajeeh33/go_crash_course/storage"
 	"github.com/wajeeh33/go_crash_course/models"
-	"net/smtp"
 	"os"
 	"path/filepath"
 	//"regexp"
@@ -829,16 +830,13 @@ func (r *Repository) ForgetPassword(w http.ResponseWriter, req *http.Request) {
 	// Save the token in the database (you might want to create a separate table for reset tokens)
 	user.ResetToken = tokenString // Assuming you have added ResetToken field in the User model
 	if err := r.DB.Save(user).Error; err != nil {
-		fmt.Println("error reset token ", err)
 		http.Error(w, "Error saving reset token", http.StatusBadRequest)
 		return
 	}
 
 	// Send reset password email
-	resetLink := fmt.Sprintf("http://localhost:8000/reset_password?token=%s", tokenString)
-	fmt.Println("resetLink ==>", resetLink)
+	resetLink := fmt.Sprintf("http://localhost:8000/api/reset_password?token=%s", tokenString)
 	if err := sendResetEmail(user.Name, request.Email, resetLink); err != nil {
-		fmt.Println("error => ", err)
 		http.Error(w, "Error sending email", http.StatusBadRequest)
 		return
 	}
@@ -1014,26 +1012,22 @@ func extractUserFromJWT(req *http.Request, db *gorm.DB) (*models.User, error) {
 
 // sendResetEmail sends the reset password email
 func sendResetEmail(name, to, resetLink string) error {
-	from := "barkahw32@gmail.com"
-	password := os.Getenv("EMAIL_PASSWORD")
-	fmt.Println("EMAIL_PASSWORD:", password)
-	hostEmail := "smtp.gmail.com"
-	smtpPort := "587"
-
-	// Set up authentication information.
-	auth := smtp.PlainAuth("", from, password, hostEmail)
-
-	// Message
+	from := mail.NewEmail("New User", "barkahw32@gmail.com")
 	subject := "Password Reset Request"
-	body := fmt.Sprintf("Hello %s,\n\nClick the link to reset your password: %s\n\nThank you!", name, resetLink)
-	msg := []byte("To: " + to + "\r\n" +
-		"Subject: " + subject + "\r\n" +
-		"\r\n" +
-		body + "\r\n")
+	toEmail := mail.NewEmail(name, to)
+	plainTextContent := fmt.Sprintf("Hello %s,\n\nClick the link to reset your password: %s\n\nThank you!", name, resetLink)
+	htmlContent := fmt.Sprintf("<strong>Hello %s,</strong><br><br>Click the link to reset your password: <a href='%s'>Reset Password</a><br><br>Thank you!", name, resetLink)
+	message := mail.NewSingleEmail(from, subject, toEmail, plainTextContent, htmlContent)
 
-	// Connect to the server, authenticate, and send the email
-	err := smtp.SendMail(hostEmail+":"+smtpPort, auth, from, []string{to}, msg)
-	return err
+	client := sendgrid.NewSendClient(os.Getenv("SENDGRID_API_KEY"))
+	response, err := client.Send(message)
+	if err != nil {
+		log.Println("Error sending email:", err)
+		return err
+	}
+
+	log.Println("Email sent with status code:", response.StatusCode)
+	return nil
 }
 
 func MigrateAll(db *gorm.DB) error {
@@ -1070,7 +1064,6 @@ func (r *Repository) SetupRoutes(rts *mux.Router) {
 	rts.HandleFunc("/register", r.Register).Methods("POST") // Registration endpoint
 	rts.HandleFunc("/login", r.Login).Methods("POST")
 	rts.HandleFunc("/create_user", r.CreateUser).Methods("POST")
-	rts.HandleFunc("/forget_password", r.ForgetPassword).Methods("POST")
 
 	// Protected routes
 	protected := rts.PathPrefix("/api").Subrouter()
@@ -1086,6 +1079,8 @@ func (r *Repository) SetupRoutes(rts *mux.Router) {
 	protected.HandleFunc("/users", r.GetUsers).Methods("GET")
 	protected.HandleFunc("/reset_password", r.ResetPassword).Methods("POST")
 	protected.HandleFunc("/change_password", r.ChangePassword).Methods("POST")
+	protected.HandleFunc("/forget_password", r.ForgetPassword).Methods("POST")
+
 
 }
 
