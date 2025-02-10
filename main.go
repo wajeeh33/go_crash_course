@@ -1012,7 +1012,7 @@ func extractUserFromJWT(req *http.Request, db *gorm.DB) (*models.User, error) {
 
 // sendResetEmail sends the reset password email
 func sendResetEmail(name, to, resetLink string) error {
-	from := mail.NewEmail("New User", "barkahw32@gmail.com")
+	from := mail.NewEmail(name, "barkahw32@gmail.com")
 	subject := "Password Reset Request"
 	toEmail := mail.NewEmail(name, to)
 	plainTextContent := fmt.Sprintf("Hello %s,\n\nClick the link to reset your password: %s\n\nThank you!", name, resetLink)
