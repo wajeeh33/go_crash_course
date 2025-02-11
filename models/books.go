@@ -6,12 +6,12 @@ import (
 )
 
 type Book struct {
-	ID           uint       `gorm:"primaryKey;autoIncrement" json:"id"`
+	ID           uint      `gorm:"primaryKey;autoIncrement" json:"id"`
 	Title       *string    `json:"title"`
 	Author      *string    `json:"author"`
 	Publisher   *string    `json:"publisher"`
 	ImagePath   *string    `json:"image_path"`
-	UserID       uint       `json:"user_id"`
+	UserID       uint      `json:"user_id"`
 	CreatedAt   time.Time  `json:"created_at" gorm:"autoCreateTime"`
 	UpdatedAt   time.Time  `json:"updated_at" gorm:"autoUpdateTime"`
 }
@@ -24,7 +24,7 @@ func MigrateBook(db *gorm.DB) error {
 	return nil
 }
 
-// Implement GetID() for Book
+// GetID Implement for Book
 func (b Book) GetID() uint {
 	return b.ID
 }

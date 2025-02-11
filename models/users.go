@@ -14,7 +14,7 @@ type User struct {
 	Token       string    `json:"token" schema:"-"`
 	ResetToken  string    `json:"reset_token" schema:"-"`
 	Status      string    `gorm:"default:'non_active'" json:"status" schema:"status"`
-	ImagePath   *string     `json:"image_path" schema:"image_path"`
+	ImagePath   *string    `json:"image_path" schema:"image_path"`
 	ActiveOn    *time.Time `json:"active_on" gorm:"default:null" schema:"-"`
 	LastActive  *time.Time `json:"last_active" gorm:"default:null" schema:"-"`
 	UserRoles   []UserRole `json:"user_roles" gorm:"foreignKey:UserID" schema:"-"`
@@ -31,7 +31,7 @@ func (u *User) IsAdmin() bool {
 	return false
 }
 
-// Implement GetID() for User
+// GetID Implement for User
 func (u User) GetID() uint {
 	return u.ID
 }
