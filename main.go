@@ -15,6 +15,7 @@ import (
 	"github.com/joho/godotenv"
 	"github.com/gorilla/schema"
 	"golang.org/x/crypto/bcrypt"
+	"math"
 	"net/http"
 	"gorm.io/gorm"
 	"github.com/wajeeh33/go_crash_course/storage"
@@ -141,9 +142,14 @@ func (r *Repository) GetBooks(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
+	TotalCount := query.RowsAffected // returns found records count
+	// Calculate current page and total pages
+	currentPage := (offset / limit) + 1
+	totalPages := int(math.Ceil(float64(TotalCount) / float64(limit)))
+
 	// Sort and respond
 	SortByID(bookModels)
-	writeJSON(w, http.StatusOK, map[string]interface{}{"message": "Books fetched successfully", "data": bookModels})
+	writeJSON(w, http.StatusOK, map[string]interface{}{"message": "Books fetched successfully", "data": bookModels, "Total_count": TotalCount, "current_page": currentPage, "total_pages": totalPages})
 }
 
 func (r *Repository) GetBook(w http.ResponseWriter, req *http.Request) {
@@ -448,12 +454,86 @@ func (r *Repository) CreateUser(w http.ResponseWriter, req *http.Request) {
 
 	userModel := &models.User{}
 
-	// Decode the request body into the User model
-	if err := json.NewDecoder(req.Body).Decode(&userModel); err != nil {
-		fmt.Println("error decoding request body:", err)
-		http.Error(w, "Invalid input", http.StatusBadRequest)
+	// Parse the incoming multipart form data (including file upload)
+	err = req.ParseMultipartForm(MaxFileSize)
+	if err != nil {
+		http.Error(w, "File size exceeds limit of 10MB", http.StatusBadRequest)
 		return
 	}
+
+	// Get the user data from form
+
+	if err := schema.NewDecoder().Decode(userModel, req.Form); err != nil {
+		fmt.Println("err =>", err)
+		http.Error(w, "Invalid form data", http.StatusBadRequest)
+		return
+	}
+
+
+	// Handle file upload
+	file, fileHeader, err := req.FormFile("image_path")
+	if err != nil {
+		http.Error(w, "Error while reading image file", http.StatusBadRequest)
+		return
+	}
+
+	defer file.Close()
+
+	// Validate file extension
+	fileExtension := strings.ToLower(filepath.Ext(fileHeader.Filename))
+	validExtensions := []string{".jpg", ".jpeg", ".png"}
+	isValidExtension := false
+	for _, ext := range validExtensions {
+		if fileExtension == ext {
+			isValidExtension = true
+			break
+		}
+	}
+
+	if !isValidExtension {
+		http.Error(w, "Invalid file extension. Only jpg, jpeg, and png files are allowed", http.StatusBadRequest)
+		return
+	}
+
+	// Validate file size
+	fileSize := fileHeader.Size
+	if fileSize > MaxFileSize {
+		http.Error(w, "File size exceeds the 10 MB limit", http.StatusBadRequest)
+		return
+	}
+
+	// Set local path for the image
+	uploadDir := "uploads/" // Local directory for storing images
+	if _, err := os.Stat(uploadDir); os.IsNotExist(err) {
+		// If the directory doesn't exist, create it
+		err := os.MkdirAll(uploadDir, os.ModePerm)
+		if err != nil {
+			http.Error(w, "Failed to create upload directory", http.StatusBadRequest)
+			return
+		}
+	}
+	currentTimestamp := time.Now().Unix() // Unix timestamp
+
+	// Convert timestamp to string
+	currentTimestampStr := fmt.Sprintf("%d", currentTimestamp)
+	// Generate the image file path
+	imagePath := uploadDir + "user_image_" + currentTimestampStr + fileExtension
+
+	// Save the file to the local directory
+	out, err := os.Create(imagePath)
+	if err != nil {
+		http.Error(w, "Error while saving image", http.StatusBadRequest)
+		return
+	}
+	defer out.Close()
+	_, err = io.Copy(out, file)
+	if err != nil {
+		http.Error(w, "Error while saving image", http.StatusBadRequest)
+		return
+	}
+
+	// Store the image path in the user record
+	userModel.ImagePath = &imagePath
 
 	// Hash the password
 	hashedPassword, err := bcrypt.GenerateFromPassword([]byte(userModel.Password), bcrypt.DefaultCost)
@@ -479,8 +559,7 @@ func (r *Repository) CreateUser(w http.ResponseWriter, req *http.Request) {
 	}
 
 	// Get the user roles to return them in the response
-	var userRoles []models.UserRole
-	if err := r.DB.Preload("Role").Where("user_id = ?", userModel.ID).Find(&userRoles).Error; err != nil {
+	if err := r.DB.Preload("UserRoles.Role").Where("id = ?", userModel.ID).First(userModel).Error; err != nil {
 		http.Error(w, "Unable to retrieve user roles", http.StatusBadRequest)
 		return
 	}
@@ -488,7 +567,6 @@ func (r *Repository) CreateUser(w http.ResponseWriter, req *http.Request) {
 	// Return successful response
 	writeJSON(w, http.StatusCreated, map[string]interface{}{
 		"data":       userModel,
-		"user_roles": userRoles,
 		"message":    "User created successfully",
 	})
 }
@@ -599,7 +677,6 @@ func (r *Repository) GetUsers(w http.ResponseWriter, req *http.Request) {
 
 	// Apply pagination
 	query = query.Limit(limit).Offset(offset)
-
 	// Ensure that we preload UserRoles and their associated Role
 	if err := query.Preload("UserRoles.Role").Find(&userModels).Error; err != nil {
 		http.Error(w, "Unable to retrieve users", http.StatusBadRequest)
@@ -607,10 +684,17 @@ func (r *Repository) GetUsers(w http.ResponseWriter, req *http.Request) {
 	}
 
 	SortByID(userModels)
+	TotalCount := query.RowsAffected // returns found records count
+	// Calculate current page and total pages
+	currentPage := (offset / limit) + 1
+	totalPages := int(math.Ceil(float64(TotalCount) / float64(limit)))
 
 	// Return successful response
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"data":       userModels,
+		"total_count": TotalCount,
+		"current_page": currentPage,
+		"total_pages": totalPages,
 		"message":    "Users retrieved successfully",
 	})
 
@@ -744,12 +828,6 @@ func (r *Repository) Logout(w http.ResponseWriter, req *http.Request) {
 func (r *Repository) Register(w http.ResponseWriter, req *http.Request) {
 	userModel := &models.User{}
 
-	// Decode the request body into the User model
-	if err := json.NewDecoder(req.Body).Decode(&userModel); err != nil {
-		http.Error(w, "Invalid input", http.StatusBadRequest)
-		return
-	}
-
 	// Hash the password
 	hashedPassword, err := bcrypt.GenerateFromPassword([]byte(userModel.Password), bcrypt.DefaultCost)
 	if err != nil {
@@ -764,9 +842,91 @@ func (r *Repository) Register(w http.ResponseWriter, req *http.Request) {
 	userModel.ActiveOn = nil
 	userModel.LastActive = nil
 
+	// Parse the incoming multipart form data (including file upload)
+	err = req.ParseMultipartForm(MaxFileSize)
+	if err != nil {
+		http.Error(w, "File size exceeds limit of 10MB", http.StatusBadRequest)
+		return
+	}
+
+	// Get the user data from form
+
+	if err := schema.NewDecoder().Decode(userModel, req.Form); err != nil {
+		fmt.Println("err =>", err)
+		http.Error(w, "Invalid form data", http.StatusBadRequest)
+		return
+	}
+
+
+	// Handle file upload
+	file, fileHeader, err := req.FormFile("image_path")
+	if err != nil {
+		http.Error(w, "Error while reading image file", http.StatusBadRequest)
+		return
+	}
+
+	defer file.Close()
+
+	// Validate file extension
+	fileExtension := strings.ToLower(filepath.Ext(fileHeader.Filename))
+	validExtensions := []string{".jpg", ".jpeg", ".png"}
+	isValidExtension := false
+	for _, ext := range validExtensions {
+		if fileExtension == ext {
+			isValidExtension = true
+			break
+		}
+	}
+
+	if !isValidExtension {
+		http.Error(w, "Invalid file extension. Only jpg, jpeg, and png files are allowed", http.StatusBadRequest)
+		return
+	}
+
+	// Validate file size
+	fileSize := fileHeader.Size
+	if fileSize > MaxFileSize {
+		http.Error(w, "File size exceeds the 10 MB limit", http.StatusBadRequest)
+		return
+	}
+
+	// Set local path for the image
+	uploadDir := "uploads/" // Local directory for storing images
+	if _, err := os.Stat(uploadDir); os.IsNotExist(err) {
+		// If the directory doesn't exist, create it
+		err := os.MkdirAll(uploadDir, os.ModePerm)
+		if err != nil {
+			http.Error(w, "Failed to create upload directory", http.StatusBadRequest)
+			return
+		}
+	}
+	currentTimestamp := time.Now().Unix() // Unix timestamp
+
+	// Convert timestamp to string
+	currentTimestampStr := fmt.Sprintf("%d", currentTimestamp)
+	// Generate the image file path
+	imagePath := uploadDir + "user_image_" + currentTimestampStr + fileExtension
+
+	// Save the file to the local directory
+	out, err := os.Create(imagePath)
+	if err != nil {
+		http.Error(w, "Error while saving image", http.StatusBadRequest)
+		return
+	}
+	defer out.Close()
+	_, err = io.Copy(out, file)
+	if err != nil {
+		http.Error(w, "Error while saving image", http.StatusBadRequest)
+		return
+	}
+
+	// Store the image path in the book record
+	userModel.ImagePath = &imagePath
+
+
 	// Create the user in the database
 	if err := r.DB.Create(&userModel).Error; err != nil {
-		http.Error(w, "Email is already taken. Please chose a different one.", http.StatusBadRequest)
+		http.Error(w, "Email or phone number is already taken. Please chose a different one.", http.StatusBadRequest)
 		return
 	}
 
