@@ -1,6 +1,5 @@
 package main
 
-
 import (
 	"context"
 	"encoding/hex"
@@ -22,12 +21,13 @@ import (
 	"github.com/wajeeh33/go_crash_course/models"
 	"os"
 	"path/filepath"
-	//"regexp"
 	"strconv"
 	"strings"
 	"time"
 	"sort"
 )
+
+const MaxFileSize = 10 * 1024 * 1024 // 10 MB
 
 type Repository struct {
 	DB *gorm.DB
@@ -37,7 +37,7 @@ type HasID interface {
 	GetID() uint
 }
 
-// Generic function to sort slices by ID
+// SortByID Generic function to sort slices by ID
 func SortByID[T HasID](items []T) {
 	sort.Slice(items, func(i, j int) bool {
 		return items[i].GetID() > items[j].GetID() // Sort in ascending order
@@ -51,8 +51,6 @@ func writeJSON(w http.ResponseWriter, status int, data interface{}) {
 	json.NewEncoder(w).Encode(data)
 }
 
-const MaxFileSize = 10 * 1024 * 1024 // 10 MB
-
 func (r *Repository) GetBooks(w http.ResponseWriter, req *http.Request) {
 	bookModels := []models.Book{}
 	query := r.DB
@@ -61,9 +59,9 @@ func (r *Repository) GetBooks(w http.ResponseWriter, req *http.Request) {
 	author := req.URL.Query().Get("author")
 	title := req.URL.Query().Get("title")
 	publisher := req.URL.Query().Get("publisher")
-	search := req.URL.Query().Get("search") // New search parameter
+	search := req.URL.Query().Get("search")
 
-	// Check for spaces in the author name and handle filtering
+	// Check for spaces in the author name
 	if author != "" {
 		trimmedAuthor := strings.TrimSpace(author)
 		authorParts := strings.Fields(trimmedAuthor)
@@ -77,7 +75,7 @@ func (r *Repository) GetBooks(w http.ResponseWriter, req *http.Request) {
 		query = query.Where("LOWER(author) LIKE ?", "%"+strings.ToLower(trimmedAuthor)+"%")
 	}
 
-	// Check for spaces in the title and handle filtering
+	// Check for spaces in the title
 	if title != "" {
 		trimmedTitle := strings.TrimSpace(title)
 		TitleParts := strings.Fields(trimmedTitle)
@@ -90,7 +88,7 @@ func (r *Repository) GetBooks(w http.ResponseWriter, req *http.Request) {
 		query = query.Where("LOWER(title) LIKE ?", "%"+strings.ToLower(trimmedTitle)+"%") // Use LIKE for partial matching
 	}
 
-	// Check for spaces in the publisher name and handle filtering
+	// Check for spaces in the publisher name
 	if publisher != "" {
 		trimmedPublisher := strings.TrimSpace(publisher)
 		publisherParts := strings.Fields(trimmedPublisher)
@@ -164,12 +162,15 @@ func (r *Repository) GetBook(w http.ResponseWriter, req *http.Request) {
 }
 
 func (r *Repository) CreateBook(w http.ResponseWriter, req *http.Request) {
+	book := &models.Book{}
+
 	// Extract user from JWT
 	user, err := extractUserFromJWT(req, r.DB)
 	if err != nil {
 		http.Error(w, "Unauthorized", http.StatusUnauthorized)
 		return
 	}
+
 	// Check if the user is an admin
 	if !user.IsAdmin() {
 		http.Error(w, "Forbidden: Only admins can create books", http.StatusForbidden)
@@ -184,7 +185,7 @@ func (r *Repository) CreateBook(w http.ResponseWriter, req *http.Request) {
 	}
 
 	// Get the book data from form
-	book := &models.Book{}
+
 	if err := schema.NewDecoder().Decode(book, req.Form); err != nil {
 		http.Error(w, "Invalid form data", http.StatusBadRequest)
 		return
@@ -199,6 +200,7 @@ func (r *Repository) CreateBook(w http.ResponseWriter, req *http.Request) {
 		http.Error(w, "Error while reading image file", http.StatusBadRequest)
 		return
 	}
+
 	defer file.Close()
 
 	// Validate file extension
@@ -211,6 +213,7 @@ func (r *Repository) CreateBook(w http.ResponseWriter, req *http.Request) {
 			break
 		}
 	}
+
 	if !isValidExtension {
 		http.Error(w, "Invalid file extension. Only jpg, jpeg, and png files are allowed", http.StatusBadRequest)
 		return
@@ -233,11 +236,11 @@ func (r *Repository) CreateBook(w http.ResponseWriter, req *http.Request) {
 			return
 		}
 	}
-	currentTimestamp := time.Now().Unix() // Unix timestamp (seconds since January 1, 1970)
+	currentTimestamp := time.Now().Unix() // Unix timestamp
 
 	// Convert timestamp to string
 	currentTimestampStr := fmt.Sprintf("%d", currentTimestamp)
-	// Generate the image file path (you can modify this logic to handle naming conflicts)
+	// Generate the image file path
 	imagePath := uploadDir + "book_image_" + currentTimestampStr + fileExtension
 
 	// Save the file to the local directory
@@ -253,12 +256,11 @@ func (r *Repository) CreateBook(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	// Store the image path in the book record (assuming you have an `ImagePath` field in the `Book` model)
+	// Store the image path in the book record
 	book.ImagePath = &imagePath
 
 	// Save book to the database
 	if err := r.DB.Create(book).Error; err != nil {
-		fmt.Println("error creating book:", err)
 		http.Error(w, "Unable to create book", http.StatusBadRequest)
 		return
 	}
@@ -336,7 +338,7 @@ func (r *Repository) UpdateBook(w http.ResponseWriter, req *http.Request) {
 			return
 		}
 
-		// Set local path for the image (inside the "uploads" directory)
+		// Set local path for the image
 		uploadDir := "uploads/"
 		currentTimestamp := time.Now().Unix() // Unix timestamp
 		imagePath := fmt.Sprintf("%sbook_image_%d%s", uploadDir, currentTimestamp, fileExtension)
@@ -347,7 +349,9 @@ func (r *Repository) UpdateBook(w http.ResponseWriter, req *http.Request) {
 			http.Error(w, "Error while saving image", http.StatusBadRequest)
 			return
 		}
+
 		defer out.Close()
+
 		_, err = io.Copy(out, file)
 		if err != nil {
 			http.Error(w, "Error while saving image", http.StatusBadRequest)
@@ -370,7 +374,7 @@ func (r *Repository) UpdateBook(w http.ResponseWriter, req *http.Request) {
 }
 
 func (r *Repository) DeleteBook(w http.ResponseWriter, req *http.Request) {
-	bookModel := &models.Book{} // Initialize book model
+	bookModel := &models.Book{}
 	vars := mux.Vars(req)
 	id, exists := vars["id"]
 
@@ -394,7 +398,7 @@ func (r *Repository) DeleteBook(w http.ResponseWriter, req *http.Request) {
 	}
 
 	// Success response
-	writeJSON(w, http.StatusOK, map[string]string{"message": "Book deleted successfully"})
+	writeJSON(w, http.StatusOK, map[string]interface{}{"message": "Book deleted successfully", "data": nil})
 }
 
 func (r *Repository) DownloadImage(w http.ResponseWriter, req *http.Request) {
@@ -490,36 +494,44 @@ func (r *Repository) CreateUser(w http.ResponseWriter, req *http.Request) {
 }
 
 func (r *Repository) GetUserProfile(w http.ResponseWriter, req *http.Request) {
-	userModel := &models.User{}
-	vars := mux.Vars(req)
-	id, exists := vars["id"]
-	if !exists || id == "" {
-		http.Error(w, "User ID is required", http.StatusBadRequest)
+	// Extract the logged-in user's ID from the request context.
+	currentUserID, ok := req.Context().Value("user_id").(string)
+	if !ok || currentUserID == "" {
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		return
 	}
-	err := r.DB.Where("id = ?", id).First(userModel, id).Error
+
+	// Get the ID from the URL parameters.
+	vars := mux.Vars(req)
+	paramID, exists := vars["id"]
+	if !exists || paramID == "" {
+		http.Error(w, "User ID is required", http.StatusBadRequest)
+		return
+	}
+
+	// Check if the requested profile belongs to the current user.
+	if currentUserID != paramID {
+		writeJSON(w, http.StatusNotFound, map[string]interface{}{"message": "Profile not found", "data": nil})
+		return
+	}
+
+	// Retrieve the user from the database.
+	userModel := &models.User{}
+	err := r.DB.Preload("UserRoles.Role").Where("id = ?", paramID).First(userModel).Error
 	if err != nil {
 		writeJSON(w, http.StatusNotFound, map[string]interface{}{"message": "User not found", "data": nil})
 		return
 	}
 
-	// Get the user roles to return them in the response
-	 userRoles:= []models.UserRole{}
-	if err := r.DB.Preload("Role").Where("user_id = ?", userModel.ID).Find(&userRoles).Error; err != nil {
-		http.Error(w, "Unable to retrieve user roles", http.StatusBadRequest)
-		return
-	}
-
-	// Return successful response
+	// Return the user profile along with their roles.
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"data":       userModel,
-		"user_roles": userRoles,
 		"message":    "User retrieved successfully",
 	})
-
 }
 
 func (r *Repository) GetUsers(w http.ResponseWriter, req *http.Request) {
-	userModels := []models.User{}
+	var userModels []models.User
 	query := r.DB
 
 	email := req.URL.Query().Get("email")
@@ -638,12 +650,6 @@ func (r *Repository) Login(w http.ResponseWriter, req *http.Request) {
 		}
 	}
 
-	UserRoles := []models.UserRole{}
-	if err := r.DB.Preload("Role").Where("user_id = ?", userModel.ID).Find(&UserRoles).Error; err != nil {
-		http.Error(w, "Unable to retrieve user roles", http.StatusBadRequest)
-		return
-	}
-
 	// Update user fields
 	now := time.Now().UTC()
 
@@ -666,16 +672,22 @@ func (r *Repository) Login(w http.ResponseWriter, req *http.Request) {
 		userModel.Token = token
 	}
 
-	// Save updated user information
+	// Save updated user information first
 	if err := r.DB.Save(userModel).Error; err != nil {
 		http.Error(w, "Error saving user record", http.StatusBadRequest)
+		return
+	}
+
+	// Now retrieve the user along with its roles
+	err := r.DB.Preload("UserRoles.Role").Where("id = ?", userModel.ID).First(userModel).Error
+	if err != nil {
+		http.Error(w, "Error retrieving updated user record", http.StatusBadRequest)
 		return
 	}
 
 	// Respond with token and user info
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"data":       userModel,
-		"user_roles": UserRoles,
 		"message":    "Login successful",
 	})
 }
@@ -747,6 +759,7 @@ func (r *Repository) Register(w http.ResponseWriter, req *http.Request) {
 
 	// Set the hashed password back to the user model
 	userModel.Password = string(hashedPassword)
+
 	// Set ActiveOn and LastActive to nil
 	userModel.ActiveOn = nil
 	userModel.LastActive = nil
@@ -765,8 +778,7 @@ func (r *Repository) Register(w http.ResponseWriter, req *http.Request) {
 	}
 
 	// Get the user roles to return them in the response
-	 userRoles := []models.UserRole{}
-	if err := r.DB.Preload("Role").Where("user_id = ?", userModel.ID).Find(&userRoles).Error; err != nil {
+	if err := r.DB.Preload("UserRoles.Role").Where("id = ?", userModel.ID).First(userModel).Error; err != nil {
 		http.Error(w, "Unable to retrieve user roles", http.StatusBadRequest)
 		return
 	}
@@ -779,7 +791,6 @@ func (r *Repository) Register(w http.ResponseWriter, req *http.Request) {
 	// Return successful response with user data
 	writeJSON(w, http.StatusCreated, map[string]interface{}{
 		"data":    userModel,
-        "Role": userRoles[0].Role,
 		"message": "User registered successfully",
 	})
 }
@@ -1061,9 +1072,8 @@ func MigrateAll(db *gorm.DB) error {
 
 func (r *Repository) SetupRoutes(rts *mux.Router) {
 	// Public routes
-	rts.HandleFunc("/register", r.Register).Methods("POST") // Registration endpoint
+	rts.HandleFunc("/register", r.Register).Methods("POST")
 	rts.HandleFunc("/login", r.Login).Methods("POST")
-	rts.HandleFunc("/create_user", r.CreateUser).Methods("POST")
 
 	// Protected routes
 	protected := rts.PathPrefix("/api").Subrouter()
@@ -1076,6 +1086,7 @@ func (r *Repository) SetupRoutes(rts *mux.Router) {
 	protected.HandleFunc("/download_image/{id}", r.DownloadImage).Methods("GET")
 	protected.HandleFunc("/logout", r.Logout).Methods("POST")
 	protected.HandleFunc("/profile/{id}", r.GetUserProfile).Methods("GET")
+	protected.HandleFunc("/create_user", r.CreateUser).Methods("POST")
 	protected.HandleFunc("/users", r.GetUsers).Methods("GET")
 	protected.HandleFunc("/reset_password", r.ResetPassword).Methods("POST")
 	protected.HandleFunc("/change_password", r.ChangePassword).Methods("POST")
