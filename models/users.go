@@ -17,7 +17,7 @@ type User struct {
 	ImagePath   *string    `json:"image_path" schema:"image_path"`
 	ActiveOn    *time.Time `json:"active_on" gorm:"default:null" schema:"-"`
 	LastActive  *time.Time `json:"last_active" gorm:"default:null" schema:"-"`
-	UserRoles   []UserRole `json:"user_roles" gorm:"foreignKey:UserID" schema:"-"`
+	UserRoles   []UserRole `json:"user_roles" gorm:"foreignKey:UserID" schema:"user_roles"`
 	CreatedAt   time.Time `json:"created_at" gorm:"autoCreateTime" schema:"-"`
 	UpdatedAt   time.Time `json:"updated_at" gorm:"autoUpdateTime" schema:"-"`
 }
