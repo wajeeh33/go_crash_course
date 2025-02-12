@@ -886,7 +886,7 @@ func (r *Repository) GetAdmins(w http.ResponseWriter, req *http.Request) {
 	query := r.DB
 
 	// Extract the authenticated user
-	currentUser, err := extractUserFromJWT(req, r.DB)
+	currentUser, err := extractUserFromJWT(req, query)
 	if err != nil {
 		http.Error(w, "Unauthorized", http.StatusUnauthorized)
 		return
@@ -902,6 +902,27 @@ func (r *Repository) GetAdmins(w http.ResponseWriter, req *http.Request) {
 	query = query.Joins("JOIN user_roles ON users.id = user_roles.user_id").
 		Joins("JOIN roles ON user_roles.role_id = roles.id").
 		Where("roles.id = ?", "admin")
+
+	// Filter by email
+	email := req.URL.Query().Get("email")
+	if email != "" {
+		trimmedEmail := strings.TrimSpace(email)
+		query = query.Where("LOWER(users.email) LIKE ?", "%"+strings.ToLower(trimmedEmail)+"%")
+	}
+
+	// Filter by name
+	name := req.URL.Query().Get("name")
+	if name != "" {
+		trimmedName := strings.TrimSpace(name)
+		query = query.Where("LOWER(users.name) LIKE ?", "%"+strings.ToLower(trimmedName)+"%")
+	}
+
+	// Search filter (applies to both name and email)
+	search := req.URL.Query().Get("search")
+	if search != "" {
+		trimmedSearch := strings.TrimSpace(search)
+		query = query.Where("LOWER(users.email) LIKE ? OR LOWER(users.name) LIKE ?", "%"+strings.ToLower(trimmedSearch)+"%", "%"+strings.ToLower(trimmedSearch)+"%")
+	}
 
 	// Pagination
 	limitStr := req.URL.Query().Get("limit")
@@ -933,6 +954,7 @@ func (r *Repository) GetAdmins(w http.ResponseWriter, req *http.Request) {
 	// Calculate pagination details
 	currentPage := (offset / limit) + 1
 	totalPages := int(math.Ceil(float64(totalCount) / float64(limit)))
+	SortByID(adminUsers)
 
 	// Return response
 	writeJSON(w, http.StatusOK, map[string]interface{}{
