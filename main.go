@@ -1,6 +1,5 @@
 package main
 
-
 import (
 	"context"
 	"encoding/hex"
@@ -16,18 +15,20 @@ import (
 	"github.com/joho/godotenv"
 	"github.com/gorilla/schema"
 	"golang.org/x/crypto/bcrypt"
+	"math"
 	"net/http"
 	"gorm.io/gorm"
 	"github.com/wajeeh33/go_crash_course/storage"
 	"github.com/wajeeh33/go_crash_course/models"
 	"os"
 	"path/filepath"
-	//"regexp"
 	"strconv"
 	"strings"
 	"time"
 	"sort"
 )
+
+const MaxFileSize = 10 * 1024 * 1024 // 10 MB
 
 type Repository struct {
 	DB *gorm.DB
@@ -37,7 +38,7 @@ type HasID interface {
 	GetID() uint
 }
 
-// Generic function to sort slices by ID
+// SortByID Generic function to sort slices by ID
 func SortByID[T HasID](items []T) {
 	sort.Slice(items, func(i, j int) bool {
 		return items[i].GetID() > items[j].GetID() // Sort in ascending order
@@ -51,8 +52,6 @@ func writeJSON(w http.ResponseWriter, status int, data interface{}) {
 	json.NewEncoder(w).Encode(data)
 }
 
-const MaxFileSize = 10 * 1024 * 1024 // 10 MB
-
 func (r *Repository) GetBooks(w http.ResponseWriter, req *http.Request) {
 	bookModels := []models.Book{}
 	query := r.DB
@@ -61,9 +60,9 @@ func (r *Repository) GetBooks(w http.ResponseWriter, req *http.Request) {
 	author := req.URL.Query().Get("author")
 	title := req.URL.Query().Get("title")
 	publisher := req.URL.Query().Get("publisher")
-	search := req.URL.Query().Get("search") // New search parameter
+	search := req.URL.Query().Get("search")
 
-	// Check for spaces in the author name and handle filtering
+	// Check for spaces in the author name
 	if author != "" {
 		trimmedAuthor := strings.TrimSpace(author)
 		authorParts := strings.Fields(trimmedAuthor)
@@ -77,7 +76,7 @@ func (r *Repository) GetBooks(w http.ResponseWriter, req *http.Request) {
 		query = query.Where("LOWER(author) LIKE ?", "%"+strings.ToLower(trimmedAuthor)+"%")
 	}
 
-	// Check for spaces in the title and handle filtering
+	// Check for spaces in the title
 	if title != "" {
 		trimmedTitle := strings.TrimSpace(title)
 		TitleParts := strings.Fields(trimmedTitle)
@@ -90,7 +89,7 @@ func (r *Repository) GetBooks(w http.ResponseWriter, req *http.Request) {
 		query = query.Where("LOWER(title) LIKE ?", "%"+strings.ToLower(trimmedTitle)+"%") // Use LIKE for partial matching
 	}
 
-	// Check for spaces in the publisher name and handle filtering
+	// Check for spaces in the publisher name
 	if publisher != "" {
 		trimmedPublisher := strings.TrimSpace(publisher)
 		publisherParts := strings.Fields(trimmedPublisher)
@@ -143,9 +142,14 @@ func (r *Repository) GetBooks(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
+	TotalCount := query.RowsAffected // returns found records count
+	// Calculate current page and total pages
+	currentPage := (offset / limit) + 1
+	totalPages := int(math.Ceil(float64(TotalCount) / float64(limit)))
+
 	// Sort and respond
 	SortByID(bookModels)
-	writeJSON(w, http.StatusOK, map[string]interface{}{"message": "Books fetched successfully", "data": bookModels})
+	writeJSON(w, http.StatusOK, map[string]interface{}{"message": "Books fetched successfully", "data": bookModels, "Total_count": TotalCount, "current_page": currentPage, "total_pages": totalPages})
 }
 
 func (r *Repository) GetBook(w http.ResponseWriter, req *http.Request) {
@@ -164,12 +168,15 @@ func (r *Repository) GetBook(w http.ResponseWriter, req *http.Request) {
 }
 
 func (r *Repository) CreateBook(w http.ResponseWriter, req *http.Request) {
+	book := &models.Book{}
+
 	// Extract user from JWT
 	user, err := extractUserFromJWT(req, r.DB)
 	if err != nil {
 		http.Error(w, "Unauthorized", http.StatusUnauthorized)
 		return
 	}
+
 	// Check if the user is an admin
 	if !user.IsAdmin() {
 		http.Error(w, "Forbidden: Only admins can create books", http.StatusForbidden)
@@ -184,7 +191,7 @@ func (r *Repository) CreateBook(w http.ResponseWriter, req *http.Request) {
 	}
 
 	// Get the book data from form
-	book := &models.Book{}
+
 	if err := schema.NewDecoder().Decode(book, req.Form); err != nil {
 		http.Error(w, "Invalid form data", http.StatusBadRequest)
 		return
@@ -199,6 +206,7 @@ func (r *Repository) CreateBook(w http.ResponseWriter, req *http.Request) {
 		http.Error(w, "Error while reading image file", http.StatusBadRequest)
 		return
 	}
+
 	defer file.Close()
 
 	// Validate file extension
@@ -211,6 +219,7 @@ func (r *Repository) CreateBook(w http.ResponseWriter, req *http.Request) {
 			break
 		}
 	}
+
 	if !isValidExtension {
 		http.Error(w, "Invalid file extension. Only jpg, jpeg, and png files are allowed", http.StatusBadRequest)
 		return
@@ -233,11 +242,11 @@ func (r *Repository) CreateBook(w http.ResponseWriter, req *http.Request) {
 			return
 		}
 	}
-	currentTimestamp := time.Now().Unix() // Unix timestamp (seconds since January 1, 1970)
+	currentTimestamp := time.Now().Unix() // Unix timestamp
 
 	// Convert timestamp to string
 	currentTimestampStr := fmt.Sprintf("%d", currentTimestamp)
-	// Generate the image file path (you can modify this logic to handle naming conflicts)
+	// Generate the image file path
 	imagePath := uploadDir + "book_image_" + currentTimestampStr + fileExtension
 
 	// Save the file to the local directory
@@ -253,12 +262,11 @@ func (r *Repository) CreateBook(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	// Store the image path in the book record (assuming you have an `ImagePath` field in the `Book` model)
+	// Store the image path in the book record
 	book.ImagePath = &imagePath
 
 	// Save book to the database
 	if err := r.DB.Create(book).Error; err != nil {
-		fmt.Println("error creating book:", err)
 		http.Error(w, "Unable to create book", http.StatusBadRequest)
 		return
 	}
@@ -336,7 +344,7 @@ func (r *Repository) UpdateBook(w http.ResponseWriter, req *http.Request) {
 			return
 		}
 
-		// Set local path for the image (inside the "uploads" directory)
+		// Set local path for the image
 		uploadDir := "uploads/"
 		currentTimestamp := time.Now().Unix() // Unix timestamp
 		imagePath := fmt.Sprintf("%sbook_image_%d%s", uploadDir, currentTimestamp, fileExtension)
@@ -347,7 +355,9 @@ func (r *Repository) UpdateBook(w http.ResponseWriter, req *http.Request) {
 			http.Error(w, "Error while saving image", http.StatusBadRequest)
 			return
 		}
+
 		defer out.Close()
+
 		_, err = io.Copy(out, file)
 		if err != nil {
 			http.Error(w, "Error while saving image", http.StatusBadRequest)
@@ -370,7 +380,7 @@ func (r *Repository) UpdateBook(w http.ResponseWriter, req *http.Request) {
 }
 
 func (r *Repository) DeleteBook(w http.ResponseWriter, req *http.Request) {
-	bookModel := &models.Book{} // Initialize book model
+	bookModel := &models.Book{}
 	vars := mux.Vars(req)
 	id, exists := vars["id"]
 
@@ -394,7 +404,7 @@ func (r *Repository) DeleteBook(w http.ResponseWriter, req *http.Request) {
 	}
 
 	// Success response
-	writeJSON(w, http.StatusOK, map[string]string{"message": "Book deleted successfully"})
+	writeJSON(w, http.StatusOK, map[string]interface{}{"message": "Book deleted successfully", "data": nil})
 }
 
 func (r *Repository) DownloadImage(w http.ResponseWriter, req *http.Request) {
@@ -444,12 +454,86 @@ func (r *Repository) CreateUser(w http.ResponseWriter, req *http.Request) {
 
 	userModel := &models.User{}
 
-	// Decode the request body into the User model
-	if err := json.NewDecoder(req.Body).Decode(&userModel); err != nil {
-		fmt.Println("error decoding request body:", err)
-		http.Error(w, "Invalid input", http.StatusBadRequest)
+	// Parse the incoming multipart form data (including file upload)
+	err = req.ParseMultipartForm(MaxFileSize)
+	if err != nil {
+		http.Error(w, "File size exceeds limit of 10MB", http.StatusBadRequest)
 		return
 	}
+
+	// Get the user data from form
+
+	if err := schema.NewDecoder().Decode(userModel, req.Form); err != nil {
+		fmt.Println("err =>", err)
+		http.Error(w, "Invalid form data", http.StatusBadRequest)
+		return
+	}
+
+
+	// Handle file upload
+	file, fileHeader, err := req.FormFile("image_path")
+	if err != nil {
+		http.Error(w, "Error while reading image file", http.StatusBadRequest)
+		return
+	}
+
+	defer file.Close()
+
+	// Validate file extension
+	fileExtension := strings.ToLower(filepath.Ext(fileHeader.Filename))
+	validExtensions := []string{".jpg", ".jpeg", ".png"}
+	isValidExtension := false
+	for _, ext := range validExtensions {
+		if fileExtension == ext {
+			isValidExtension = true
+			break
+		}
+	}
+
+	if !isValidExtension {
+		http.Error(w, "Invalid file extension. Only jpg, jpeg, and png files are allowed", http.StatusBadRequest)
+		return
+	}
+
+	// Validate file size
+	fileSize := fileHeader.Size
+	if fileSize > MaxFileSize {
+		http.Error(w, "File size exceeds the 10 MB limit", http.StatusBadRequest)
+		return
+	}
+
+	// Set local path for the image
+	uploadDir := "uploads/" // Local directory for storing images
+	if _, err := os.Stat(uploadDir); os.IsNotExist(err) {
+		// If the directory doesn't exist, create it
+		err := os.MkdirAll(uploadDir, os.ModePerm)
+		if err != nil {
+			http.Error(w, "Failed to create upload directory", http.StatusBadRequest)
+			return
+		}
+	}
+	currentTimestamp := time.Now().Unix() // Unix timestamp
+
+	// Convert timestamp to string
+	currentTimestampStr := fmt.Sprintf("%d", currentTimestamp)
+	// Generate the image file path
+	imagePath := uploadDir + "user_image_" + currentTimestampStr + fileExtension
+
+	// Save the file to the local directory
+	out, err := os.Create(imagePath)
+	if err != nil {
+		http.Error(w, "Error while saving image", http.StatusBadRequest)
+		return
+	}
+	defer out.Close()
+	_, err = io.Copy(out, file)
+	if err != nil {
+		http.Error(w, "Error while saving image", http.StatusBadRequest)
+		return
+	}
+
+	// Store the image path in the user record
+	userModel.ImagePath = &imagePath
 
 	// Hash the password
 	hashedPassword, err := bcrypt.GenerateFromPassword([]byte(userModel.Password), bcrypt.DefaultCost)
@@ -475,8 +559,7 @@ func (r *Repository) CreateUser(w http.ResponseWriter, req *http.Request) {
 	}
 
 	// Get the user roles to return them in the response
-	var userRoles []models.UserRole
-	if err := r.DB.Preload("Role").Where("user_id = ?", userModel.ID).Find(&userRoles).Error; err != nil {
+	if err := r.DB.Preload("UserRoles.Role").Where("id = ?", userModel.ID).First(userModel).Error; err != nil {
 		http.Error(w, "Unable to retrieve user roles", http.StatusBadRequest)
 		return
 	}
@@ -484,81 +567,270 @@ func (r *Repository) CreateUser(w http.ResponseWriter, req *http.Request) {
 	// Return successful response
 	writeJSON(w, http.StatusCreated, map[string]interface{}{
 		"data":       userModel,
-		"user_roles": userRoles,
 		"message":    "User created successfully",
 	})
 }
 
-func (r *Repository) GetUserProfile(w http.ResponseWriter, req *http.Request) {
-	userModel := &models.User{}
+func (r *Repository) UpdateUser(w http.ResponseWriter, req *http.Request) {
+	// Extract the target user ID from URL parameters
 	vars := mux.Vars(req)
-	id, exists := vars["id"]
-	if !exists || id == "" {
+	targetID, ok := vars["id"]
+	if !ok || targetID == "" {
 		http.Error(w, "User ID is required", http.StatusBadRequest)
+		return
 	}
-	err := r.DB.Where("id = ?", id).First(userModel, id).Error
+
+	// Retrieve the target user's record from the database
+	userModel := &models.User{}
+	if err := r.DB.Where("id = ?", targetID).First(userModel).Error; err != nil {
+		writeJSON(w, http.StatusNotFound, map[string]interface{}{"message": "User not found", "data": nil})
+		return
+	}
+
+	// Extract the currently logged-in user from the JWT (to check admin privileges)
+	currentUser, err := extractUserFromJWT(req, r.DB)
+	if err != nil {
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+	if !currentUser.IsAdmin() {
+		http.Error(w, "Forbidden: Only admins can update users", http.StatusForbidden)
+		return
+	}
+
+	// Parse the incoming multipart form data (including file upload)
+	if err := req.ParseMultipartForm(MaxFileSize); err != nil {
+		http.Error(w, "File size exceeds limit of 10MB", http.StatusBadRequest)
+		return
+	}
+
+	// Decode form data into userModel.
+	// (Ensure your models.User struct has proper `schema` tags for the fields you want to update.)
+	if err := schema.NewDecoder().Decode(userModel, req.Form); err != nil {
+		http.Error(w, "Invalid form data", http.StatusBadRequest)
+		return
+	}
+
+	// Handle file upload if a file is provided.
+	file, fileHeader, err := req.FormFile("image_path")
+	if err == nil {
+		defer file.Close()
+
+		fileExtension := strings.ToLower(filepath.Ext(fileHeader.Filename))
+		validExtensions := []string{".jpg", ".jpeg", ".png"}
+		isValidExtension := false
+		for _, ext := range validExtensions {
+			if fileExtension == ext {
+				isValidExtension = true
+				break
+			}
+		}
+		if !isValidExtension {
+			http.Error(w, "Invalid file extension. Only jpg, jpeg, and png files are allowed", http.StatusBadRequest)
+			return
+		}
+		if fileHeader.Size > MaxFileSize {
+			http.Error(w, "File size exceeds the 10 MB limit", http.StatusBadRequest)
+			return
+		}
+
+		uploadDir := "uploads/"
+		if _, err := os.Stat(uploadDir); os.IsNotExist(err) {
+			if err := os.MkdirAll(uploadDir, os.ModePerm); err != nil {
+				http.Error(w, "Failed to create upload directory", http.StatusBadRequest)
+				return
+			}
+		}
+		currentTimestamp := time.Now().Unix()
+		imagePath := fmt.Sprintf("%suser_image_%d%s", uploadDir, currentTimestamp, fileExtension)
+
+		out, err := os.Create(imagePath)
+		if err != nil {
+			http.Error(w, "Error while saving image", http.StatusBadRequest)
+			return
+		}
+		defer out.Close()
+		if _, err = io.Copy(out, file); err != nil {
+			http.Error(w, "Error while saving image", http.StatusBadRequest)
+			return
+		}
+		// Update the image path in the user record
+		userModel.ImagePath = &imagePath
+	}
+
+	// If a new password is provided in the form, update it.
+	// (Assume the form field "password" holds the new password.)
+	if newPass := req.FormValue("password"); newPass != "" {
+		hashedPassword, err := bcrypt.GenerateFromPassword([]byte(newPass), bcrypt.DefaultCost)
+		if err != nil {
+			http.Error(w, "Error hashing password", http.StatusInternalServerError)
+			return
+		}
+		userModel.Password = string(hashedPassword)
+	}
+
+	// Save the updated user record
+	if err := r.DB.Save(userModel).Error; err != nil {
+		http.Error(w, "Unable to update user", http.StatusInternalServerError)
+		return
+	}
+
+	// Reload the user record with preloaded user roles and their associated Role data
+	if err := r.DB.Preload("UserRoles.Role").Where("id = ?", userModel.ID).First(userModel).Error; err != nil {
+		http.Error(w, "Unable to retrieve user roles", http.StatusBadRequest)
+		return
+	}
+
+	// Return the updated user profile
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"data":    userModel,
+		"message": "User updated successfully",
+	})
+}
+
+func (r *Repository) UpdateUserRole(w http.ResponseWriter, req *http.Request) {
+	// Extract user ID from the request URL
+	vars := mux.Vars(req)
+	userID, userIDExists := vars["id"]
+	if !userIDExists || userID == "" {
+		http.Error(w, "User ID is required", http.StatusBadRequest)
+		return
+	}
+
+	// Extract the authenticated user (to check admin privileges)
+	currentUser, err := extractUserFromJWT(req, r.DB)
+	if err != nil {
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	// Only allow admins to update user roles
+	if !currentUser.IsAdmin() {
+		http.Error(w, "Forbidden: Only admins can update user roles", http.StatusForbidden)
+		return
+	}
+
+	var UserRole models.UserRole
+	if err := json.NewDecoder(req.Body).Decode(&UserRole); err != nil {
+		http.Error(w, "Invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	// Ensure RoleID is provided
+	if UserRole.RoleID == "" {
+		http.Error(w, "Role ID is required", http.StatusBadRequest)
+		return
+	}
+
+	// Check if the role exists
+	var role models.Role
+	if err := r.DB.Where("id = ?", UserRole.RoleID).First(&role).Error; err != nil {
+		http.Error(w, "Role not found", http.StatusNotFound)
+		return
+	}
+
+	// Check if the user exists
+	var user models.User
+	if err := r.DB.Where("id = ?", userID).First(&user).Error; err != nil {
+		http.Error(w, "User not found", http.StatusNotFound)
+		return
+	}
+
+	// Update the user's role
+	var userRole models.UserRole
+	if err := r.DB.Where("user_id = ?", user.ID).First(&userRole).Error; err != nil {
+		// No existing role, create a new one
+		userRole = models.UserRole{
+			UserID: user.ID,
+			RoleID: UserRole.RoleID,
+		}
+		if err := r.DB.Create(&userRole).Error; err != nil {
+			http.Error(w, "Failed to assign role to user", http.StatusBadRequest)
+			return
+		}
+	} else {
+		// Update the existing role assignment
+		userRole.RoleID = UserRole.RoleID
+		if err := r.DB.Save(&userRole).Error; err != nil {
+			http.Error(w, "Failed to update user role", http.StatusBadRequest)
+			return
+		}
+	}
+
+	// Return success response
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"message": "User role updated successfully",
+		"user_id": user.ID,
+		"role_id": UserRole.RoleID,
+	})
+}
+
+func (r *Repository) GetUserProfile(w http.ResponseWriter, req *http.Request) {
+	// Extract the logged-in user's ID from the request context.
+	currentUserID, ok := req.Context().Value("user_id").(string)
+	if !ok || currentUserID == "" {
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	// Get the ID from the URL parameters.
+	vars := mux.Vars(req)
+	paramID, exists := vars["id"]
+	if !exists || paramID == "" {
+		http.Error(w, "User ID is required", http.StatusBadRequest)
+		return
+	}
+
+	// Check if the requested profile belongs to the current user.
+	if currentUserID != paramID {
+		writeJSON(w, http.StatusNotFound, map[string]interface{}{"message": "Profile not found", "data": nil})
+		return
+	}
+
+	// Retrieve the user from the database.
+	userModel := &models.User{}
+	err := r.DB.Preload("UserRoles.Role").Where("id = ?", paramID).First(userModel).Error
 	if err != nil {
 		writeJSON(w, http.StatusNotFound, map[string]interface{}{"message": "User not found", "data": nil})
 		return
 	}
 
-	// Get the user roles to return them in the response
-	 userRoles:= []models.UserRole{}
-	if err := r.DB.Preload("Role").Where("user_id = ?", userModel.ID).Find(&userRoles).Error; err != nil {
-		http.Error(w, "Unable to retrieve user roles", http.StatusBadRequest)
-		return
-	}
-
-	// Return successful response
+	// Return the user profile along with their roles.
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"data":       userModel,
-		"user_roles": userRoles,
 		"message":    "User retrieved successfully",
 	})
-
 }
 
 func (r *Repository) GetUsers(w http.ResponseWriter, req *http.Request) {
-	userModels := []models.User{}
+	var userModels []models.User
 	query := r.DB
 
-	email := req.URL.Query().Get("email")
-	name := req.URL.Query().Get("name")
-	search := req.URL.Query().Get("search")
+	// Ensure admins are not listed
+	query = query.Joins("JOIN user_roles ON users.id = user_roles.user_id").
+		Joins("JOIN roles ON user_roles.role_id = roles.id").
+		Where("users.id NOT IN (SELECT user_id FROM user_roles WHERE role_id = (SELECT id FROM roles WHERE id = 'admin')) AND users.id IN (SELECT user_id FROM user_roles WHERE role_id = (SELECT id FROM roles WHERE id = 'user'))")
 
-	// Check for spaces in the author name and handle filtering
+	// Filter by email
+	email := req.URL.Query().Get("email")
 	if email != "" {
 		trimmedEmail := strings.TrimSpace(email)
-		emailParts := strings.Fields(trimmedEmail)
-
-		if len(emailParts) == 0 {
-			http.Error(w, "email cannot be empty", http.StatusBadRequest)
-			return
-		}
-
-		// Prepare the query for both first and last names
-		query = query.Where("LOWER(email) LIKE ?", "%"+strings.ToLower(trimmedEmail)+"%")
+		query = query.Where("LOWER(users.email) LIKE ?", "%"+strings.ToLower(trimmedEmail)+"%")
 	}
 
-	// Check for spaces in the title and handle filtering
+	// Filter by name
+	name := req.URL.Query().Get("name")
 	if name != "" {
 		trimmedName := strings.TrimSpace(name)
-		NameParts := strings.Fields(trimmedName)
-
-		if len(NameParts) == 0 {
-			http.Error(w, "Author name cannot be empty", http.StatusBadRequest)
-			return
-		}
-
-		query = query.Where("LOWER(name) LIKE ?", "%"+strings.ToLower(trimmedName)+"%") // Use LIKE for partial matching
+		query = query.Where("LOWER(users.name) LIKE ?", "%"+strings.ToLower(trimmedName)+"%")
 	}
 
-	// Handle search filtering across both fields
+	// Search filter (applies to both name and email)
+	search := req.URL.Query().Get("search")
 	if search != "" {
 		trimmedSearch := strings.TrimSpace(search)
-		query = query.Where("LOWER(email) LIKE ? OR LOWER(name) LIKE ?", "%"+strings.ToLower(trimmedSearch)+"%", "%"+strings.ToLower(trimmedSearch)+"%")
+		query = query.Where("LOWER(users.email) LIKE ? OR LOWER(users.name) LIKE ?", "%"+strings.ToLower(trimmedSearch)+"%", "%"+strings.ToLower(trimmedSearch)+"%")
 	}
-
 
 	// Pagination
 	limitStr := req.URL.Query().Get("limit")
@@ -587,7 +859,6 @@ func (r *Repository) GetUsers(w http.ResponseWriter, req *http.Request) {
 
 	// Apply pagination
 	query = query.Limit(limit).Offset(offset)
-
 	// Ensure that we preload UserRoles and their associated Role
 	if err := query.Preload("UserRoles.Role").Find(&userModels).Error; err != nil {
 		http.Error(w, "Unable to retrieve users", http.StatusBadRequest)
@@ -595,13 +866,146 @@ func (r *Repository) GetUsers(w http.ResponseWriter, req *http.Request) {
 	}
 
 	SortByID(userModels)
+	TotalCount := query.RowsAffected // returns found records count
+	// Calculate current page and total pages
+	currentPage := (offset / limit) + 1
+	totalPages := int(math.Ceil(float64(TotalCount) / float64(limit)))
 
 	// Return successful response
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"data":       userModels,
+		"total_count": TotalCount,
+		"current_page": currentPage,
+		"total_pages": totalPages,
 		"message":    "Users retrieved successfully",
 	})
+}
 
+func (r *Repository) GetAdmins(w http.ResponseWriter, req *http.Request) {
+	var adminUsers []models.User
+	query := r.DB
+
+	// Extract the authenticated user
+	currentUser, err := extractUserFromJWT(req, r.DB)
+	if err != nil {
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	// Ensure only admins can access this endpoint
+	if !currentUser.IsAdmin() {
+		http.Error(w, "Forbidden: Only admins can view admin users", http.StatusForbidden)
+		return
+	}
+
+	// Query only admin users
+	query = query.Joins("JOIN user_roles ON users.id = user_roles.user_id").
+		Joins("JOIN roles ON user_roles.role_id = roles.id").
+		Where("roles.id = ?", "admin")
+
+	// Pagination
+	limitStr := req.URL.Query().Get("limit")
+	offsetStr := req.URL.Query().Get("offset")
+
+	limit, err := strconv.Atoi(limitStr)
+	if err != nil || limit <= 0 {
+		limit = 10 // Default limit
+	}
+
+	offset, err := strconv.Atoi(offsetStr)
+	if err != nil || offset < 0 {
+		offset = 0 // Default offset
+	}
+
+	// Apply pagination
+	query = query.Limit(limit).Offset(offset)
+
+	// Fetch admin users
+	if err := query.Preload("UserRoles.Role").Find(&adminUsers).Error; err != nil {
+		http.Error(w, "Unable to retrieve admins", http.StatusBadRequest)
+		return
+	}
+
+	// Get total admin count
+	var totalCount int64
+	query.Model(&models.User{}).Count(&totalCount)
+
+	// Calculate pagination details
+	currentPage := (offset / limit) + 1
+	totalPages := int(math.Ceil(float64(totalCount) / float64(limit)))
+
+	// Return response
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"data":         adminUsers,
+		"total_count":  totalCount,
+		"current_page": currentPage,
+		"total_pages":  totalPages,
+		"message":      "Admins retrieved successfully",
+	})
+}
+
+func (r *Repository) DeleteUser(w http.ResponseWriter, req *http.Request) {
+	// Extract user ID from URL parameters
+	vars := mux.Vars(req)
+	userID, userIDExists := vars["id"]
+	if !userIDExists || userID == "" {
+		http.Error(w, "User ID is required", http.StatusBadRequest)
+		return
+	}
+
+	// Extract the authenticated user (to check admin privileges)
+	currentUser, err := extractUserFromJWT(req, r.DB)
+	if err != nil {
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	// Only allow admins to delete users
+	if !currentUser.IsAdmin() {
+		http.Error(w, "Forbidden: Only admins can delete users", http.StatusForbidden)
+		return
+	}
+
+	// Check if the user exists
+	var user models.User
+	if err := r.DB.Where("id = ?", userID).Preload("UserRoles.Role").First(&user).Error; err != nil {
+		http.Error(w, "User not found", http.StatusNotFound)
+		return
+	}
+
+	// Check if the user to be deleted is an admin
+	for _, userRole := range user.UserRoles {
+		if userRole.RoleID == "admin" {
+			writeJSON(w, http.StatusForbidden, map[string]interface{}{"message": "Admin cannot be deleted!", "data": nil})
+			return
+		}
+	}
+
+	// Start transaction to ensure atomic operation
+	tx := r.DB.Begin()
+
+	// Delete associated roles first to avoid foreign key constraint errors
+	if err := tx.Where("user_id = ?", userID).Delete(&models.UserRole{}).Error; err != nil {
+		tx.Rollback()
+		http.Error(w, "Failed to delete user roles", http.StatusInternalServerError)
+		return
+	}
+
+	// Delete the user
+	if err := tx.Delete(&user).Error; err != nil {
+		tx.Rollback()
+		http.Error(w, "Failed to delete user", http.StatusInternalServerError)
+		return
+	}
+
+	// Commit transaction
+	tx.Commit()
+
+	// Return success response
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"message": "User deleted successfully",
+		"user_id": userID,
+	})
 }
 
 func (r *Repository) Login(w http.ResponseWriter, req *http.Request) {
@@ -638,12 +1042,6 @@ func (r *Repository) Login(w http.ResponseWriter, req *http.Request) {
 		}
 	}
 
-	UserRoles := []models.UserRole{}
-	if err := r.DB.Preload("Role").Where("user_id = ?", userModel.ID).Find(&UserRoles).Error; err != nil {
-		http.Error(w, "Unable to retrieve user roles", http.StatusBadRequest)
-		return
-	}
-
 	// Update user fields
 	now := time.Now().UTC()
 
@@ -666,16 +1064,22 @@ func (r *Repository) Login(w http.ResponseWriter, req *http.Request) {
 		userModel.Token = token
 	}
 
-	// Save updated user information
+	// Save updated user information first
 	if err := r.DB.Save(userModel).Error; err != nil {
 		http.Error(w, "Error saving user record", http.StatusBadRequest)
+		return
+	}
+
+	// Now retrieve the user along with its roles
+	err := r.DB.Preload("UserRoles.Role").Where("id = ?", userModel.ID).First(userModel).Error
+	if err != nil {
+		http.Error(w, "Error retrieving updated user record", http.StatusBadRequest)
 		return
 	}
 
 	// Respond with token and user info
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"data":       userModel,
-		"user_roles": UserRoles,
 		"message":    "Login successful",
 	})
 }
@@ -732,12 +1136,6 @@ func (r *Repository) Logout(w http.ResponseWriter, req *http.Request) {
 func (r *Repository) Register(w http.ResponseWriter, req *http.Request) {
 	userModel := &models.User{}
 
-	// Decode the request body into the User model
-	if err := json.NewDecoder(req.Body).Decode(&userModel); err != nil {
-		http.Error(w, "Invalid input", http.StatusBadRequest)
-		return
-	}
-
 	// Hash the password
 	hashedPassword, err := bcrypt.GenerateFromPassword([]byte(userModel.Password), bcrypt.DefaultCost)
 	if err != nil {
@@ -747,13 +1145,96 @@ func (r *Repository) Register(w http.ResponseWriter, req *http.Request) {
 
 	// Set the hashed password back to the user model
 	userModel.Password = string(hashedPassword)
+
 	// Set ActiveOn and LastActive to nil
 	userModel.ActiveOn = nil
 	userModel.LastActive = nil
 
+	// Parse the incoming multipart form data (including file upload)
+	err = req.ParseMultipartForm(MaxFileSize)
+	if err != nil {
+		http.Error(w, "File size exceeds limit of 10MB", http.StatusBadRequest)
+		return
+	}
+
+	// Get the user data from form
+
+	if err := schema.NewDecoder().Decode(userModel, req.Form); err != nil {
+		fmt.Println("err =>", err)
+		http.Error(w, "Invalid form data", http.StatusBadRequest)
+		return
+	}
+
+
+	// Handle file upload
+	file, fileHeader, err := req.FormFile("image_path")
+	if err != nil {
+		http.Error(w, "Error while reading image file", http.StatusBadRequest)
+		return
+	}
+
+	defer file.Close()
+
+	// Validate file extension
+	fileExtension := strings.ToLower(filepath.Ext(fileHeader.Filename))
+	validExtensions := []string{".jpg", ".jpeg", ".png"}
+	isValidExtension := false
+	for _, ext := range validExtensions {
+		if fileExtension == ext {
+			isValidExtension = true
+			break
+		}
+	}
+
+	if !isValidExtension {
+		http.Error(w, "Invalid file extension. Only jpg, jpeg, and png files are allowed", http.StatusBadRequest)
+		return
+	}
+
+	// Validate file size
+	fileSize := fileHeader.Size
+	if fileSize > MaxFileSize {
+		http.Error(w, "File size exceeds the 10 MB limit", http.StatusBadRequest)
+		return
+	}
+
+	// Set local path for the image
+	uploadDir := "uploads/" // Local directory for storing images
+	if _, err := os.Stat(uploadDir); os.IsNotExist(err) {
+		// If the directory doesn't exist, create it
+		err := os.MkdirAll(uploadDir, os.ModePerm)
+		if err != nil {
+			http.Error(w, "Failed to create upload directory", http.StatusBadRequest)
+			return
+		}
+	}
+	currentTimestamp := time.Now().Unix() // Unix timestamp
+
+	// Convert timestamp to string
+	currentTimestampStr := fmt.Sprintf("%d", currentTimestamp)
+	// Generate the image file path
+	imagePath := uploadDir + "user_image_" + currentTimestampStr + fileExtension
+
+	// Save the file to the local directory
+	out, err := os.Create(imagePath)
+	if err != nil {
+		http.Error(w, "Error while saving image", http.StatusBadRequest)
+		return
+	}
+	defer out.Close()
+	_, err = io.Copy(out, file)
+	if err != nil {
+		http.Error(w, "Error while saving image", http.StatusBadRequest)
+		return
+	}
+
+	// Store the image path in the book record
+	userModel.ImagePath = &imagePath
+
+
 	// Create the user in the database
 	if err := r.DB.Create(&userModel).Error; err != nil {
-		http.Error(w, "Email is already taken. Please chose a different one.", http.StatusBadRequest)
+		http.Error(w, "Email or phone number is already taken. Please chose a different one.", http.StatusBadRequest)
 		return
 	}
 
@@ -765,8 +1246,7 @@ func (r *Repository) Register(w http.ResponseWriter, req *http.Request) {
 	}
 
 	// Get the user roles to return them in the response
-	 userRoles := []models.UserRole{}
-	if err := r.DB.Preload("Role").Where("user_id = ?", userModel.ID).Find(&userRoles).Error; err != nil {
+	if err := r.DB.Preload("UserRoles.Role").Where("id = ?", userModel.ID).First(userModel).Error; err != nil {
 		http.Error(w, "Unable to retrieve user roles", http.StatusBadRequest)
 		return
 	}
@@ -779,7 +1259,6 @@ func (r *Repository) Register(w http.ResponseWriter, req *http.Request) {
 	// Return successful response with user data
 	writeJSON(w, http.StatusCreated, map[string]interface{}{
 		"data":    userModel,
-        "Role": userRoles[0].Role,
 		"message": "User registered successfully",
 	})
 }
@@ -941,7 +1420,14 @@ func (r *Repository) AuthMiddleware(next http.Handler) http.Handler {
 		user := &models.User{}
 		err := r.DB.Where("token = ?", tokenString).First(user).Error
 		if err != nil {
-			http.Error(w, "Invalid token", http.StatusUnauthorized)
+			http.Error(w, "You need to login before accessing it", http.StatusBadRequest)
+			return
+		}
+
+		// Check if the user is an admin.
+		var userRole models.UserRole
+		if err := r.DB.Where("user_id = ? AND role_id = ?", user.ID, "admin").First(&userRole).Error; err != nil {
+			http.Error(w, "Only admin can access this.", http.StatusUnauthorized)
 			return
 		}
 
@@ -1061,9 +1547,8 @@ func MigrateAll(db *gorm.DB) error {
 
 func (r *Repository) SetupRoutes(rts *mux.Router) {
 	// Public routes
-	rts.HandleFunc("/register", r.Register).Methods("POST") // Registration endpoint
+	rts.HandleFunc("/register", r.Register).Methods("POST")
 	rts.HandleFunc("/login", r.Login).Methods("POST")
-	rts.HandleFunc("/create_user", r.CreateUser).Methods("POST")
 
 	// Protected routes
 	protected := rts.PathPrefix("/api").Subrouter()
@@ -1076,7 +1561,12 @@ func (r *Repository) SetupRoutes(rts *mux.Router) {
 	protected.HandleFunc("/download_image/{id}", r.DownloadImage).Methods("GET")
 	protected.HandleFunc("/logout", r.Logout).Methods("POST")
 	protected.HandleFunc("/profile/{id}", r.GetUserProfile).Methods("GET")
+	protected.HandleFunc("/create_user", r.CreateUser).Methods("POST")
+	protected.HandleFunc("/update_user/{id}", r.UpdateUser).Methods("PUT")
+	protected.HandleFunc("/update_user_role/{id}", r.UpdateUserRole).Methods("PUT")
 	protected.HandleFunc("/users", r.GetUsers).Methods("GET")
+	protected.HandleFunc("/admin_users", r.GetAdmins).Methods("GET")
+	protected.HandleFunc("/users/{id}", r.DeleteUser).Methods("DELETE")
 	protected.HandleFunc("/reset_password", r.ResetPassword).Methods("POST")
 	protected.HandleFunc("/change_password", r.ChangePassword).Methods("POST")
 	protected.HandleFunc("/forget_password", r.ForgetPassword).Methods("POST")
