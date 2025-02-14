@@ -8,9 +8,9 @@ import (
 type User struct {
 	ID          uint      `gorm:"primaryKey;autoIncrement" json:"id" schema:"-"`
 	Name        string    `json:"name" schema:"name"`
-	Email       string    `gorm:"unique;not null" json:"email" schema:"email"`
+	Email       string    `gorm:"not null" json:"email" schema:"email"`
 	Password    string    `gorm:"not null" json:"password" schema:"password"`
-	PhoneNumber string    `json:"phone_number" schema:"phone_number" gorm:"unique"`
+	PhoneNumber string    `json:"phone_number" schema:"phone_number"`
 	Token       string    `json:"token" schema:"-"`
 	ResetToken  string    `json:"reset_token" schema:"-"`
 	Status      string    `gorm:"default:'non_active'" json:"status" schema:"status"`

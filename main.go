@@ -3,7 +3,9 @@ package main
 import (
 	"context"
 	"encoding/hex"
+	"encoding/csv"
 	"crypto/rand"
+	"github.com/tealeg/xlsx"
 	"io"
 	"log"
 	"encoding/json"
@@ -568,6 +570,137 @@ func (r *Repository) CreateUser(w http.ResponseWriter, req *http.Request) {
 	writeJSON(w, http.StatusCreated, map[string]interface{}{
 		"data":       userModel,
 		"message":    "User created successfully",
+	})
+}
+
+func (r *Repository) CreateMember(w http.ResponseWriter, req *http.Request) {
+	// Extract JWT from request
+	user, err := extractUserFromJWT(req, r.DB)
+	if err != nil {
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+	// Check if the user is an admin
+	if !user.IsAdmin() {
+		http.Error(w, "Forbidden: Only admins can create users", http.StatusForbidden)
+		return
+	}
+
+	// Parse the incoming multipart form data (including file upload)
+	err = req.ParseMultipartForm(25 << 20) // 25 MB
+	if err != nil {
+		http.Error(w, "File size exceeds limit of 25MB", http.StatusBadRequest)
+		return
+	}
+
+	// Get the uploaded file
+	file, fileHeader, err := req.FormFile("file")
+	if err != nil {
+		http.Error(w, "Error while reading file", http.StatusBadRequest)
+		return
+	}
+	defer file.Close()
+
+	// Validate file type
+	fileExtension := strings.ToLower(filepath.Ext(fileHeader.Filename))
+	if fileExtension != ".csv" && fileExtension != ".xlsx" {
+		http.Error(w, "File should be CSV or XLSX", http.StatusBadRequest)
+		return
+	}
+
+	// Validate file size
+	if fileHeader.Size > 25<<20 { // 25 MB
+		http.Error(w, "File size exceeds the 25 MB limit", http.StatusBadRequest)
+		return
+	}
+
+	// Parse the file based on its type
+	var users []models.User
+	var emailsInFile []string
+	if fileExtension == ".csv" {
+		users, err = parseCSV(file)
+	} else if fileExtension == ".xlsx" {
+		users, err = parseXLSX(file)
+	}
+	if err != nil {
+		http.Error(w, "Error parsing file: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	// Collect emails from the uploaded users
+	for _, u := range users {
+		emailsInFile = append(emailsInFile, u.Email)
+	}
+
+	// Handle user creation logic and deletion of existing non-admin users
+	for _, user := range users {
+		// Check if the email already exists in the database
+		var existingUser models.User
+		result := r.DB.Where("email = ?", user.Email).First(&existingUser)
+
+		if result.Error == nil {
+			// Email exists, ignore the record
+			continue
+		}
+
+		// If user does not exist, create a new user
+		if result.Error == gorm.ErrRecordNotFound {
+			// Hash the password
+			hashedPassword, err := bcrypt.GenerateFromPassword([]byte(user.Password), bcrypt.DefaultCost)
+			if err != nil {
+				http.Error(w, "Error hashing password", http.StatusBadRequest)
+				return
+			}
+			user.Password = string(hashedPassword)
+
+			// Create the user in the database
+			if err := r.DB.Create(&user).Error; err != nil {
+				http.Error(w, "Unable to create user: "+err.Error(), http.StatusBadRequest)
+				return
+			}
+
+			// Assign a default role (e.g., "user") to the new user
+			userRole := models.UserRole{UserID: user.ID, RoleID: "user"}
+			if err := r.DB.Create(&userRole).Error; err != nil {
+				http.Error(w, "Unable to assign role to user: "+err.Error(), http.StatusBadRequest)
+				return
+			}
+		}
+	}
+
+	// Delete users not included in the uploaded file, excluding admins
+	var existingUsers []models.User
+	if err := r.DB.Find(&existingUsers).Error; err != nil {
+		http.Error(w, "Error retrieving existing users: "+err.Error(), http.StatusNotFound)
+		return
+	}
+
+	for _, existingUser := range existingUsers {
+		if !contains(emailsInFile, existingUser.Email) {
+			// Check if the user is an admin
+			var userRole models.UserRole
+			if err := r.DB.Where("user_id = ?", existingUser.ID).First(&userRole).Error; err != nil {
+				// If the user is not found, proceed to delete
+				continue
+			}
+			if userRole.RoleID != "admin" { // Only delete if not an admin
+				// Delete associated user roles first
+				if err := r.DB.Where("user_id = ?", existingUser.ID).Delete(&models.UserRole{}).Error; err != nil {
+					http.Error(w, "Error deleting user roles: "+err.Error(), http.StatusForbidden)
+					return
+				}
+				// Delete the user
+				if err := r.DB.Delete(&existingUser).Error; err != nil {
+					http.Error(w, "Error deleting user: "+err.Error(), http.StatusBadRequest)
+					return
+				}
+			}
+		}
+	}
+
+	// Return successful response
+	writeJSON(w, http.StatusCreated, map[string]interface{}{
+		"message": "Members created successfully",
 	})
 }
 
@@ -1554,18 +1687,130 @@ func MigrateAll(db *gorm.DB) error {
 	return nil
 }
 
-//// Email validation regex
-//func emailRegex(email string) bool {
-//	re := regexp.MustCompile(`^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$`)
-//	fmt.Println("regs => ", re)
-//	return re.MatchString(email)
-//}
+func contains(slice []string, item string) bool {
+	for _, s := range slice {
+		if s == item {
+			return true
+		}
+	}
+	return false
+}
 
-// Phone number validation regex
-//func phoneNumberRegex(phone string) bool {
-//	re := regexp.MustCompile(`^\+\d{8,15}$`)
-//	return re.MatchString(phone)
-//}
+func parseCSV(file io.Reader) ([]models.User, error) {
+	reader := csv.NewReader(file)
+	users := []models.User{}
+
+	// Read the header row
+	header, err := reader.Read()
+	if err != nil {
+		return nil, err
+	}
+
+	// Validate header columns
+	expectedHeader := []string{"name", "email", "phone_number", "status", "active_on"}
+	if len(header) != len(expectedHeader) {
+		return nil, fmt.Errorf("invalid CSV format: expected %d columns, got %d", len(expectedHeader), len(header))
+	}
+	for i, col := range header {
+		if col != expectedHeader[i] {
+			return nil, fmt.Errorf("invalid CSV format: expected column %s, got %s", expectedHeader[i], col)
+		}
+	}
+
+	// Read the data rows
+	for {
+		record, err := reader.Read()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return nil, err
+		}
+
+		user := models.User{
+			Name:        record[0],
+			Email:       record[1],
+			PhoneNumber: record[2],
+			Status:      record[3],
+		}
+
+		// Parse ActiveOn field if provided
+		if record[4] != "" {
+			activeOn, err := time.Parse("2006-01-02", record[4])
+			if err != nil {
+				return nil, fmt.Errorf("invalid date format for active_on: %s", record[4])
+			}
+			user.ActiveOn = &activeOn
+		}
+
+		users = append(users, user)
+	}
+
+	return users, nil
+}
+
+func parseXLSX(file io.Reader) ([]models.User, error) {
+	// Read the file content into a byte slice
+	data, err := io.ReadAll(file)
+	if err != nil {
+		return nil, fmt.Errorf("error reading file: %v", err)
+	}
+
+	// Create an io.ReaderAt from the byte slice
+	xlFile, err := xlsx.OpenBinary(data)
+	if err != nil {
+		return nil, fmt.Errorf("error opening XLSX file: %v", err)
+	}
+
+	users := []models.User{}
+	sheet := xlFile.Sheets[0]
+
+	// Validate header columns
+	expectedHeader := []string{"name", "email", "phone_number", "status", "active_on"}
+	if len(sheet.Rows[0].Cells) != len(expectedHeader) {
+		return nil, fmt.Errorf("invalid XLSX format: expected %d columns, got %d", len(expectedHeader), len(sheet.Rows[0].Cells))
+	}
+
+	for i, cell := range sheet.Rows[0].Cells {
+		if cell.String() != expectedHeader[i] {
+			return nil, fmt.Errorf("invalid XLSX format: expected column %s, got %s", expectedHeader[i], cell.String())
+		}
+	}
+
+	// Read the data rows
+	for rowIndex, row := range sheet.Rows[1:] {
+		if len(row.Cells) < 4 { // Check for minimum required fields
+			return nil, fmt.Errorf("invalid XLSX format at row %d: each row must have at least 4 columns, got %d", rowIndex+2, len(row.Cells))
+		}
+
+		user := models.User{
+			Name:        row.Cells[0].String(),
+			Email:       row.Cells[1].String(),
+			PhoneNumber: row.Cells[2].String(),
+			Status:      row.Cells[3].String(),
+		}
+
+		// Parse ActiveOn field if provided and only if it exists
+		if len(row.Cells) > 4 {
+			if row.Cells[4].String() != "" {
+				activeOn, err := time.Parse("2006-01-02", row.Cells[4].String())
+				if err != nil {
+					return nil, fmt.Errorf("invalid date format for active_on in row %d: %s", rowIndex+2, row.Cells[4].String())
+				}
+				user.ActiveOn = &activeOn
+			}
+		}
+
+		// Validate required fields
+		if user.Name == "" || user.Email == "" || user.PhoneNumber == "" {
+			return nil, fmt.Errorf("invalid data at row %d: name, email, and phone number are required fields", rowIndex+2)
+		}
+
+		users = append(users, user)
+	}
+
+	return users, nil
+}
 
 func (r *Repository) SetupRoutes(rts *mux.Router) {
 	// Public routes
@@ -1584,6 +1829,7 @@ func (r *Repository) SetupRoutes(rts *mux.Router) {
 	protected.HandleFunc("/logout", r.Logout).Methods("POST")
 	protected.HandleFunc("/profile/{id}", r.GetUserProfile).Methods("GET")
 	protected.HandleFunc("/create_user", r.CreateUser).Methods("POST")
+	protected.HandleFunc("/create_member", r.CreateMember).Methods("POST")
 	protected.HandleFunc("/update_user/{id}", r.UpdateUser).Methods("PUT")
 	protected.HandleFunc("/update_user_role/{id}", r.UpdateUserRole).Methods("PUT")
 	protected.HandleFunc("/users", r.GetUsers).Methods("GET")
