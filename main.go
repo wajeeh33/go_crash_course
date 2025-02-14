@@ -171,9 +171,9 @@ func (r *Repository) GetBook(w http.ResponseWriter, req *http.Request) {
 
 func (r *Repository) CreateBook(w http.ResponseWriter, req *http.Request) {
 	book := &models.Book{}
-
+    query := r.DB
 	// Extract user from JWT
-	user, err := extractUserFromJWT(req, r.DB)
+	user, err := extractUserFromJWT(req, query)
 	if err != nil {
 		http.Error(w, "Unauthorized", http.StatusUnauthorized)
 		return
@@ -268,7 +268,7 @@ func (r *Repository) CreateBook(w http.ResponseWriter, req *http.Request) {
 	book.ImagePath = &imagePath
 
 	// Save book to the database
-	if err := r.DB.Create(book).Error; err != nil {
+	if err := query.Create(book).Error; err != nil {
 		http.Error(w, "Unable to create book", http.StatusBadRequest)
 		return
 	}
@@ -278,6 +278,7 @@ func (r *Repository) CreateBook(w http.ResponseWriter, req *http.Request) {
 }
 
 func (r *Repository) UpdateBook(w http.ResponseWriter, req *http.Request) {
+	query := r.DB
 	bookModel := &models.Book{}
 	vars := mux.Vars(req)
 
@@ -291,7 +292,7 @@ func (r *Repository) UpdateBook(w http.ResponseWriter, req *http.Request) {
 	}
 
 	// Check if the book exists in the database
-	err := r.DB.Where("id = ?", id).First(bookModel).Error
+	err := query.Where("id = ?", id).First(bookModel).Error
 	if err != nil {
 		writeJSON(w, http.StatusNotFound, map[string]interface{}{"message": "Book not found", "data": nil})
 		return
@@ -371,7 +372,7 @@ func (r *Repository) UpdateBook(w http.ResponseWriter, req *http.Request) {
 	}
 
 	// Update the book record
-	err = r.DB.Save(bookModel).Error
+	err = query.Save(bookModel).Error
 	if err != nil {
 		http.Error(w, "Unable to update book", http.StatusInternalServerError)
 		return
@@ -382,6 +383,7 @@ func (r *Repository) UpdateBook(w http.ResponseWriter, req *http.Request) {
 }
 
 func (r *Repository) DeleteBook(w http.ResponseWriter, req *http.Request) {
+	query := r.DB
 	bookModel := &models.Book{}
 	vars := mux.Vars(req)
 	id, exists := vars["id"]
@@ -393,14 +395,14 @@ func (r *Repository) DeleteBook(w http.ResponseWriter, req *http.Request) {
 	}
 
 	// Check if book exists in DB
-	err := r.DB.Where("id = ?", id).First(bookModel).Error
+	err := query.Where("id = ?", id).First(bookModel).Error
 	if err != nil {
 		writeJSON(w, http.StatusNotFound, map[string]interface{}{"message": "Book not found", "data": nil})
 		return
 	}
 
 	// Delete book and check if deletion was successful
-	if r.DB.Delete(bookModel).RowsAffected == 0 {
+	if query.Delete(bookModel).RowsAffected == 0 {
 		http.Error(w, "Unable to delete book", http.StatusBadRequest)
 		return
 	}
@@ -443,7 +445,8 @@ func (r *Repository) DownloadImage(w http.ResponseWriter, req *http.Request) {
 
 func (r *Repository) CreateUser(w http.ResponseWriter, req *http.Request) {
 	// Extract JWT from request
-	user, err := extractUserFromJWT(req, r.DB)
+	query := r.DB
+	user, err := extractUserFromJWT(req, query)
 	if err != nil {
 		http.Error(w, "Unauthorized", http.StatusUnauthorized)
 		return
@@ -548,20 +551,20 @@ func (r *Repository) CreateUser(w http.ResponseWriter, req *http.Request) {
 	userModel.Password = string(hashedPassword) // No need for pointer here
 
 	// Create the user in the database
-	if err := r.DB.Create(&userModel).Error; err != nil {
+	if err := query.Create(&userModel).Error; err != nil {
 		http.Error(w, "Unable to create user", http.StatusBadRequest)
 		return
 	}
 
 	// Assign a default role (e.g., "admin") to the new user
 	userRole := models.UserRole{UserID: userModel.ID, RoleID: "user"} // Adjust this line
-	if err := r.DB.Create(&userRole).Error; err != nil {
+	if err := query.Create(&userRole).Error; err != nil {
 		http.Error(w, "Unable to assign role to user", http.StatusBadRequest)
 		return
 	}
 
 	// Get the user roles to return them in the response
-	if err := r.DB.Preload("UserRoles.Role").Where("id = ?", userModel.ID).First(userModel).Error; err != nil {
+	if err := query.Preload("UserRoles.Role").Where("id = ?", userModel.ID).First(userModel).Error; err != nil {
 		http.Error(w, "Unable to retrieve user roles", http.StatusBadRequest)
 		return
 	}
@@ -574,8 +577,9 @@ func (r *Repository) CreateUser(w http.ResponseWriter, req *http.Request) {
 }
 
 func (r *Repository) CreateMember(w http.ResponseWriter, req *http.Request) {
+	query := r.DB
 	// Extract JWT from request
-	user, err := extractUserFromJWT(req, r.DB)
+	user, err := extractUserFromJWT(req, query)
 	if err != nil {
 		http.Error(w, "Unauthorized", http.StatusUnauthorized)
 		return
@@ -636,7 +640,7 @@ func (r *Repository) CreateMember(w http.ResponseWriter, req *http.Request) {
 	for _, user := range users {
 		// Check if the email already exists in the database
 		var existingUser models.User
-		result := r.DB.Where("email = ?", user.Email).First(&existingUser)
+		result := query.Where("email = ?", user.Email).First(&existingUser)
 
 		if result.Error == nil {
 			// Email exists, ignore the record
@@ -654,14 +658,14 @@ func (r *Repository) CreateMember(w http.ResponseWriter, req *http.Request) {
 			user.Password = string(hashedPassword)
 
 			// Create the user in the database
-			if err := r.DB.Create(&user).Error; err != nil {
+			if err := query.Create(&user).Error; err != nil {
 				http.Error(w, "Unable to create user: "+err.Error(), http.StatusBadRequest)
 				return
 			}
 
 			// Assign a default role (e.g., "user") to the new user
 			userRole := models.UserRole{UserID: user.ID, RoleID: "user"}
-			if err := r.DB.Create(&userRole).Error; err != nil {
+			if err := query.Create(&userRole).Error; err != nil {
 				http.Error(w, "Unable to assign role to user: "+err.Error(), http.StatusBadRequest)
 				return
 			}
@@ -670,7 +674,7 @@ func (r *Repository) CreateMember(w http.ResponseWriter, req *http.Request) {
 
 	// Delete users not included in the uploaded file, excluding admins
 	var existingUsers []models.User
-	if err := r.DB.Find(&existingUsers).Error; err != nil {
+	if err := query.Find(&existingUsers).Error; err != nil {
 		http.Error(w, "Error retrieving existing users: "+err.Error(), http.StatusNotFound)
 		return
 	}
@@ -679,18 +683,18 @@ func (r *Repository) CreateMember(w http.ResponseWriter, req *http.Request) {
 		if !contains(emailsInFile, existingUser.Email) {
 			// Check if the user is an admin
 			var userRole models.UserRole
-			if err := r.DB.Where("user_id = ?", existingUser.ID).First(&userRole).Error; err != nil {
+			if err := query.Where("user_id = ?", existingUser.ID).First(&userRole).Error; err != nil {
 				// If the user is not found, proceed to delete
 				continue
 			}
 			if userRole.RoleID != "admin" { // Only delete if not an admin
 				// Delete associated user roles first
-				if err := r.DB.Where("user_id = ?", existingUser.ID).Delete(&models.UserRole{}).Error; err != nil {
+				if err := query.Where("user_id = ?", existingUser.ID).Delete(&models.UserRole{}).Error; err != nil {
 					http.Error(w, "Error deleting user roles: "+err.Error(), http.StatusForbidden)
 					return
 				}
 				// Delete the user
-				if err := r.DB.Delete(&existingUser).Error; err != nil {
+				if err := query.Delete(&existingUser).Error; err != nil {
 					http.Error(w, "Error deleting user: "+err.Error(), http.StatusBadRequest)
 					return
 				}
@@ -705,6 +709,7 @@ func (r *Repository) CreateMember(w http.ResponseWriter, req *http.Request) {
 }
 
 func (r *Repository) UpdateUser(w http.ResponseWriter, req *http.Request) {
+	query := r.DB
 	// Extract the target user ID from URL parameters
 	vars := mux.Vars(req)
 	targetID, ok := vars["id"]
@@ -715,13 +720,13 @@ func (r *Repository) UpdateUser(w http.ResponseWriter, req *http.Request) {
 
 	// Retrieve the target user's record from the database
 	userModel := &models.User{}
-	if err := r.DB.Where("id = ?", targetID).First(userModel).Error; err != nil {
+	if err := query.Where("id = ?", targetID).First(userModel).Error; err != nil {
 		writeJSON(w, http.StatusNotFound, map[string]interface{}{"message": "User not found", "data": nil})
 		return
 	}
 
 	// Extract the currently logged-in user from the JWT (to check admin privileges)
-	currentUser, err := extractUserFromJWT(req, r.DB)
+	currentUser, err := extractUserFromJWT(req, query)
 	if err != nil {
 		http.Error(w, "Unauthorized", http.StatusUnauthorized)
 		return
@@ -803,13 +808,13 @@ func (r *Repository) UpdateUser(w http.ResponseWriter, req *http.Request) {
 	}
 
 	// Save the updated user record
-	if err := r.DB.Save(userModel).Error; err != nil {
+	if err := query.Save(userModel).Error; err != nil {
 		http.Error(w, "Unable to update user", http.StatusInternalServerError)
 		return
 	}
 
 	// Reload the user record with preloaded user roles and their associated Role data
-	if err := r.DB.Preload("UserRoles.Role").Where("id = ?", userModel.ID).First(userModel).Error; err != nil {
+	if err := query.Preload("UserRoles.Role").Where("id = ?", userModel.ID).First(userModel).Error; err != nil {
 		http.Error(w, "Unable to retrieve user roles", http.StatusBadRequest)
 		return
 	}
@@ -822,6 +827,7 @@ func (r *Repository) UpdateUser(w http.ResponseWriter, req *http.Request) {
 }
 
 func (r *Repository) UpdateUserRole(w http.ResponseWriter, req *http.Request) {
+	query := r.DB
 	// Extract user ID from the request URL
 	vars := mux.Vars(req)
 	userID, userIDExists := vars["id"]
@@ -831,7 +837,7 @@ func (r *Repository) UpdateUserRole(w http.ResponseWriter, req *http.Request) {
 	}
 
 	// Extract the authenticated user (to check admin privileges)
-	currentUser, err := extractUserFromJWT(req, r.DB)
+	currentUser, err := extractUserFromJWT(req, query)
 	if err != nil {
 		http.Error(w, "Unauthorized", http.StatusUnauthorized)
 		return
@@ -857,34 +863,34 @@ func (r *Repository) UpdateUserRole(w http.ResponseWriter, req *http.Request) {
 
 	// Check if the role exists
 	var role models.Role
-	if err := r.DB.Where("id = ?", UserRole.RoleID).First(&role).Error; err != nil {
+	if err := query.Where("id = ?", UserRole.RoleID).First(&role).Error; err != nil {
 		http.Error(w, "Role not found", http.StatusNotFound)
 		return
 	}
 
 	// Check if the user exists
 	var user models.User
-	if err := r.DB.Where("id = ?", userID).First(&user).Error; err != nil {
+	if err := query.Where("id = ?", userID).First(&user).Error; err != nil {
 		http.Error(w, "User not found", http.StatusNotFound)
 		return
 	}
 
 	// Update the user's role
 	var userRole models.UserRole
-	if err := r.DB.Where("user_id = ?", user.ID).First(&userRole).Error; err != nil {
+	if err := query.Where("user_id = ?", user.ID).First(&userRole).Error; err != nil {
 		// No existing role, create a new one
 		userRole = models.UserRole{
 			UserID: user.ID,
 			RoleID: UserRole.RoleID,
 		}
-		if err := r.DB.Create(&userRole).Error; err != nil {
+		if err := query.Create(&userRole).Error; err != nil {
 			http.Error(w, "Failed to assign role to user", http.StatusBadRequest)
 			return
 		}
 	} else {
 		// Update the existing role assignment
 		userRole.RoleID = UserRole.RoleID
-		if err := r.DB.Save(&userRole).Error; err != nil {
+		if err := query.Save(&userRole).Error; err != nil {
 			http.Error(w, "Failed to update user role", http.StatusBadRequest)
 			return
 		}
@@ -1100,6 +1106,7 @@ func (r *Repository) GetAdmins(w http.ResponseWriter, req *http.Request) {
 }
 
 func (r *Repository) DeleteUser(w http.ResponseWriter, req *http.Request) {
+	query := r.DB
 	// Extract user ID from URL parameters
 	vars := mux.Vars(req)
 	userID, userIDExists := vars["id"]
@@ -1109,7 +1116,7 @@ func (r *Repository) DeleteUser(w http.ResponseWriter, req *http.Request) {
 	}
 
 	// Extract the authenticated user (to check admin privileges)
-	currentUser, err := extractUserFromJWT(req, r.DB)
+	currentUser, err := extractUserFromJWT(req, query)
 	if err != nil {
 		http.Error(w, "Unauthorized", http.StatusUnauthorized)
 		return
@@ -1123,7 +1130,7 @@ func (r *Repository) DeleteUser(w http.ResponseWriter, req *http.Request) {
 
 	// Check if the user exists
 	var user models.User
-	if err := r.DB.Where("id = ?", userID).Preload("UserRoles.Role").First(&user).Error; err != nil {
+	if err := query.Where("id = ?", userID).Preload("UserRoles.Role").First(&user).Error; err != nil {
 		http.Error(w, "User not found", http.StatusNotFound)
 		return
 	}
@@ -1137,7 +1144,7 @@ func (r *Repository) DeleteUser(w http.ResponseWriter, req *http.Request) {
 	}
 
 	// Start transaction to ensure atomic operation
-	tx := r.DB.Begin()
+	tx := query.Begin()
 
 	// Delete associated roles first to avoid foreign key constraint errors
 	if err := tx.Where("user_id = ?", userID).Delete(&models.UserRole{}).Error; err != nil {
@@ -1164,6 +1171,7 @@ func (r *Repository) DeleteUser(w http.ResponseWriter, req *http.Request) {
 }
 
 func (r *Repository) Login(w http.ResponseWriter, req *http.Request) {
+	query := r.DB
 	userModel := &models.User{}
 	var credentials struct {
 		Email       string `json:"email"`
@@ -1184,13 +1192,13 @@ func (r *Repository) Login(w http.ResponseWriter, req *http.Request) {
 
 	// Find user in the database using either Email or PhoneNumber
 	if credentials.Email != "" {
-		err := r.DB.Where("email = ?", credentials.Email).First(userModel).Error
+		err := query.Where("email = ?", credentials.Email).First(userModel).Error
 		if err != nil {
 			writeJSON(w, http.StatusNotFound, map[string]interface{}{"message": "User not found", "data": nil})
 			return
 		}
 	} else {
-		err := r.DB.Where("phone_number = ?", credentials.PhoneNumber).First(userModel).Error
+		err := query.Where("phone_number = ?", credentials.PhoneNumber).First(userModel).Error
 		if err != nil {
 			writeJSON(w, http.StatusNotFound, map[string]interface{}{"message": "User not found", "data": nil})
 			return
@@ -1220,13 +1228,13 @@ func (r *Repository) Login(w http.ResponseWriter, req *http.Request) {
 	}
 
 	// Save updated user information first
-	if err := r.DB.Save(userModel).Error; err != nil {
+	if err := query.Save(userModel).Error; err != nil {
 		http.Error(w, "Error saving user record", http.StatusBadRequest)
 		return
 	}
 
 	// Now retrieve the user along with its roles
-	err := r.DB.Preload("UserRoles.Role").Where("id = ?", userModel.ID).First(userModel).Error
+	err := query.Preload("UserRoles.Role").Where("id = ?", userModel.ID).First(userModel).Error
 	if err != nil {
 		http.Error(w, "Error retrieving updated user record", http.StatusBadRequest)
 		return
@@ -1240,6 +1248,7 @@ func (r *Repository) Login(w http.ResponseWriter, req *http.Request) {
 }
 
 func (r *Repository) Logout(w http.ResponseWriter, req *http.Request) {
+	query := r.DB
 	authHeader := req.Header.Get("Authorization")
 	if authHeader == "" {
 		http.Error(w, "Missing token", http.StatusUnauthorized)
@@ -1256,7 +1265,7 @@ func (r *Repository) Logout(w http.ResponseWriter, req *http.Request) {
 
 	// Retrieve user from the database using the token
 	user := &models.User{}
-	err := r.DB.Where("token = ?", tokenString).First(user).Error
+	err := query.Where("token = ?", tokenString).First(user).Error
 	if err != nil {
 		http.Error(w, "Invalid token", http.StatusUnauthorized)
 		return
@@ -1271,14 +1280,14 @@ func (r *Repository) Logout(w http.ResponseWriter, req *http.Request) {
 	if err != nil || !token.Valid {
 		// Token is invalid; remove it from the database
 		user.Token = ""
-		r.DB.Save(user)
+		query.Save(user)
 		writeJSON(w, http.StatusUnauthorized, map[string]interface{}{"message": "Token is expired or invalid"})
 		return
 	}
 
 	// Token is valid; remove it from the database
 	user.Token = ""
-	if err := r.DB.Save(user).Error; err != nil {
+	if err := query.Save(user).Error; err != nil {
 		http.Error(w, "Error removing token from user record", http.StatusInternalServerError)
 		return
 	}
@@ -1289,6 +1298,7 @@ func (r *Repository) Logout(w http.ResponseWriter, req *http.Request) {
 }
 
 func (r *Repository) Register(w http.ResponseWriter, req *http.Request) {
+	query := r.DB
 	userModel := &models.User{}
 
 	// Hash the password
@@ -1388,25 +1398,25 @@ func (r *Repository) Register(w http.ResponseWriter, req *http.Request) {
 
 
 	// Create the user in the database
-	if err := r.DB.Create(&userModel).Error; err != nil {
+	if err := query.Create(&userModel).Error; err != nil {
 		http.Error(w, "Email or phone number is already taken. Please chose a different one.", http.StatusBadRequest)
 		return
 	}
 
 	// Assign a default role (e.g., "admin") to the new user
 	userRole := models.UserRole{UserID: userModel.ID, RoleID: "user"} // Adjust this line
-	if err := r.DB.Create(&userRole).Error; err != nil {
+	if err := query.Create(&userRole).Error; err != nil {
 		http.Error(w, "Unable to assign role to user", http.StatusBadRequest)
 		return
 	}
 
 	// Get the user roles to return them in the response
-	if err := r.DB.Preload("UserRoles.Role").Where("id = ?", userModel.ID).First(userModel).Error; err != nil {
+	if err := query.Preload("UserRoles.Role").Where("id = ?", userModel.ID).First(userModel).Error; err != nil {
 		http.Error(w, "Unable to retrieve user roles", http.StatusBadRequest)
 		return
 	}
 
-	if err := r.DB.Save(userModel).Error; err != nil {
+	if err := query.Save(userModel).Error; err != nil {
 		http.Error(w, "Error saving token to user record", http.StatusBadRequest)
 		return
 	}
@@ -1419,6 +1429,7 @@ func (r *Repository) Register(w http.ResponseWriter, req *http.Request) {
 }
 
 func (r *Repository) ForgetPassword(w http.ResponseWriter, req *http.Request) {
+	query := r.DB
 	user := &models.User{}
 	var request struct {
 		Email string `json:"email"`
@@ -1435,20 +1446,7 @@ func (r *Repository) ForgetPassword(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-
-	//// Validate email using the model's emailRegex function
-	//if emailRegex(request.Email) {
-	//
-	//	http.Error(w, "Invalid email format", http.StatusBadRequest)
-	//	return
-	//}
-	//// Validate email using the model's emailRegex function
-	//if phoneNumberRegex(request.PhoneNumber) {
-	//	http.Error(w, "Invalid phone number format", http.StatusBadRequest)
-	//	return
-	//}
-
-	if err := r.DB.Where("email = ?", request.Email).First(user).Error; err != nil {
+	if err := query.Where("email = ?", request.Email).First(user).Error; err != nil {
 		http.Error(w, "User not found", http.StatusNotFound)
 		return
 	}
@@ -1463,7 +1461,7 @@ func (r *Repository) ForgetPassword(w http.ResponseWriter, req *http.Request) {
 
 	// Save the token in the database (you might want to create a separate table for reset tokens)
 	user.ResetToken = tokenString // Assuming you have added ResetToken field in the User model
-	if err := r.DB.Save(user).Error; err != nil {
+	if err := query.Save(user).Error; err != nil {
 		http.Error(w, "Error saving reset token", http.StatusBadRequest)
 		return
 	}
@@ -1479,6 +1477,7 @@ func (r *Repository) ForgetPassword(w http.ResponseWriter, req *http.Request) {
 }
 
 func (r *Repository) ResetPassword(w http.ResponseWriter, req *http.Request) {
+	query := r.DB
 	var request struct {
 		Token    string `json:"token"`
 		Password string `json:"password"`
@@ -1491,7 +1490,7 @@ func (r *Repository) ResetPassword(w http.ResponseWriter, req *http.Request) {
 
 	// Find user by reset token
 	user := &models.User{}
-	if err := r.DB.Where("reset_token = ?", request.Token).First(user).Error; err != nil {
+	if err := query.Where("reset_token = ?", request.Token).First(user).Error; err != nil {
 		http.Error(w, "Invalid or expired token", http.StatusUnauthorized)
 		return
 	}
@@ -1507,7 +1506,7 @@ func (r *Repository) ResetPassword(w http.ResponseWriter, req *http.Request) {
 	user.Password = string(hashedPassword)
 	user.ResetToken = ""
 
-	if err := r.DB.Save(user).Error; err != nil {
+	if err := query.Save(user).Error; err != nil {
 		http.Error(w, "Error updating password", http.StatusInternalServerError)
 		return
 	}
@@ -1516,7 +1515,8 @@ func (r *Repository) ResetPassword(w http.ResponseWriter, req *http.Request) {
 }
 
 func (r *Repository) ChangePassword(w http.ResponseWriter, req *http.Request) {
-	user, err := extractUserFromJWT(req, r.DB)
+	query := r.DB
+	user, err := extractUserFromJWT(req, query)
 	if err != nil {
 		http.Error(w, "Unauthorized", http.StatusUnauthorized)
 		return
@@ -1547,7 +1547,7 @@ func (r *Repository) ChangePassword(w http.ResponseWriter, req *http.Request) {
 
 	// Update the user's password
 	user.Password = string(hashedPassword)
-	if err := r.DB.Save(user).Error; err != nil {
+	if err := query.Save(user).Error; err != nil {
 		http.Error(w, "Error updating password", http.StatusInternalServerError)
 		return
 	}
@@ -1557,6 +1557,7 @@ func (r *Repository) ChangePassword(w http.ResponseWriter, req *http.Request) {
 
 func (r *Repository) AuthMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		query := r.DB
 		authHeader := req.Header.Get("Authorization")
 		if authHeader == "" {
 			http.Error(w, "Missing token", http.StatusUnauthorized)
@@ -1573,7 +1574,7 @@ func (r *Repository) AuthMiddleware(next http.Handler) http.Handler {
 
 		// Fetch user from the database using the token
 		user := &models.User{}
-		err := r.DB.Where("token = ?", tokenString).First(user).Error
+		err := query.Where("token = ?", tokenString).First(user).Error
 		if err != nil {
 			http.Error(w, "You need to login before accessing it", http.StatusBadRequest)
 			return
@@ -1581,7 +1582,7 @@ func (r *Repository) AuthMiddleware(next http.Handler) http.Handler {
 
 		// Check if the user is an admin.
 		var userRole models.UserRole
-		if err := r.DB.Where("user_id = ? AND role_id = ?", user.ID, "admin").First(&userRole).Error; err != nil {
+		if err := query.Where("user_id = ? AND role_id = ?", user.ID, "admin").First(&userRole).Error; err != nil {
 			http.Error(w, "Only admin can access this.", http.StatusUnauthorized)
 			return
 		}
@@ -1595,7 +1596,7 @@ func (r *Repository) AuthMiddleware(next http.Handler) http.Handler {
 		if err != nil || !token.Valid {
 			// Token is invalid; remove it from the database
 			user.Token = ""
-			r.DB.Save(user)
+			query.Save(user)
 			http.Error(w, "Token is expired or invalid", http.StatusUnauthorized)
 			return
 		}
@@ -1700,47 +1701,60 @@ func parseCSV(file io.Reader) ([]models.User, error) {
 	reader := csv.NewReader(file)
 	users := []models.User{}
 
-	// Read the header row
 	header, err := reader.Read()
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("error reading header: %v", err)
 	}
 
-	// Validate header columns
 	expectedHeader := []string{"name", "email", "phone_number", "status", "active_on"}
-	if len(header) != len(expectedHeader) {
-		return nil, fmt.Errorf("invalid CSV format: expected %d columns, got %d", len(expectedHeader), len(header))
+	// Validate header columns
+	if len(header) != len(expectedHeader) && len(header) != 4 {
+		return nil, fmt.Errorf("invalid XLSX format: expected %d columns or 4 columns, got %d", len(expectedHeader), len(header))
 	}
+
 	for i, col := range header {
 		if col != expectedHeader[i] {
 			return nil, fmt.Errorf("invalid CSV format: expected column %s, got %s", expectedHeader[i], col)
 		}
 	}
 
-	// Read the data rows
-	for {
+	for rowIndex := 1; ; rowIndex++ {
 		record, err := reader.Read()
 		if err == io.EOF {
 			break
 		}
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("error reading row %d: %v", rowIndex+1, err)
+		}
+
+		// Ensure the record has at least 4 relevant fields
+		if len(record) < 4 {
+			return nil, fmt.Errorf("invalid CSV format at row %d: expected at least 4 columns, got %d", rowIndex+1, len(record))
 		}
 
 		user := models.User{
-			Name:        record[0],
-			Email:       record[1],
-			PhoneNumber: record[2],
-			Status:      record[3],
+			Name:        strings.TrimSpace(record[0]),
+			Email:       strings.TrimSpace(record[1]),
+			PhoneNumber: strings.TrimSpace(record[2]),
+			Status:      strings.TrimSpace(record[3]),
 		}
 
 		// Parse ActiveOn field if provided
-		if record[4] != "" {
-			activeOn, err := time.Parse("2006-01-02", record[4])
-			if err != nil {
-				return nil, fmt.Errorf("invalid date format for active_on: %s", record[4])
+		if len(record) > 4 {
+			activeOnStr := strings.TrimSpace(record[4])
+			if activeOnStr != "" { // Only attempt to parse if the string is not empty
+				activeOn, err := time.Parse("2006-01-02", activeOnStr)
+				if err != nil {
+					fmt.Println("Error parsing date:", err)
+					continue // Skip this entry but continue processing
+				}
+				user.ActiveOn = &activeOn
 			}
-			user.ActiveOn = &activeOn
+		}
+
+		// Validate required fields
+		if user.Name == "" || user.Email == "" || user.PhoneNumber == "" {
+			return nil, fmt.Errorf("invalid data at row %d: name, email and phone number are required fields", rowIndex+1)
 		}
 
 		users = append(users, user)
@@ -1750,13 +1764,11 @@ func parseCSV(file io.Reader) ([]models.User, error) {
 }
 
 func parseXLSX(file io.Reader) ([]models.User, error) {
-	// Read the file content into a byte slice
 	data, err := io.ReadAll(file)
 	if err != nil {
 		return nil, fmt.Errorf("error reading file: %v", err)
 	}
 
-	// Create an io.ReaderAt from the byte slice
 	xlFile, err := xlsx.OpenBinary(data)
 	if err != nil {
 		return nil, fmt.Errorf("error opening XLSX file: %v", err)
@@ -1765,10 +1777,10 @@ func parseXLSX(file io.Reader) ([]models.User, error) {
 	users := []models.User{}
 	sheet := xlFile.Sheets[0]
 
-	// Validate header columns
 	expectedHeader := []string{"name", "email", "phone_number", "status", "active_on"}
-	if len(sheet.Rows[0].Cells) != len(expectedHeader) {
-		return nil, fmt.Errorf("invalid XLSX format: expected %d columns, got %d", len(expectedHeader), len(sheet.Rows[0].Cells))
+	// Validate header columns
+	if len(sheet.Rows[0].Cells) != len(expectedHeader) && len(sheet.Rows[0].Cells) != 4 {
+		return nil, fmt.Errorf("invalid XLSX format: expected %d columns or 4 columns, got %d", len(expectedHeader), len(sheet.Rows[0].Cells))
 	}
 
 	for i, cell := range sheet.Rows[0].Cells {
@@ -1777,33 +1789,35 @@ func parseXLSX(file io.Reader) ([]models.User, error) {
 		}
 	}
 
-	// Read the data rows
 	for rowIndex, row := range sheet.Rows[1:] {
-		if len(row.Cells) < 4 { // Check for minimum required fields
-			return nil, fmt.Errorf("invalid XLSX format at row %d: each row must have at least 4 columns, got %d", rowIndex+2, len(row.Cells))
+		// Ensure the row has at least 4 relevant columns
+		if len(row.Cells) < 4 {
+			return nil, fmt.Errorf("invalid XLSX format at row %d: expected at least 4 columns, got %d", rowIndex+2, len(row.Cells))
 		}
 
 		user := models.User{
-			Name:        row.Cells[0].String(),
-			Email:       row.Cells[1].String(),
-			PhoneNumber: row.Cells[2].String(),
-			Status:      row.Cells[3].String(),
+			Name:        strings.TrimSpace(row.Cells[0].String()),
+			Email:       strings.TrimSpace(row.Cells[1].String()),
+			PhoneNumber: strings.TrimSpace(row.Cells[2].String()),
+			Status:      strings.TrimSpace(row.Cells[3].String()),
 		}
 
-		// Parse ActiveOn field if provided and only if it exists
+		// Parse ActiveOn field if provided
 		if len(row.Cells) > 4 {
-			if row.Cells[4].String() != "" {
-				activeOn, err := time.Parse("2006-01-02", row.Cells[4].String())
+			activeOnStr := strings.TrimSpace(row.Cells[4].String())
+			if activeOnStr != "" { // Only attempt to parse if the string is not empty
+				activeOn, err := time.Parse("2006-01-02", activeOnStr)
 				if err != nil {
-					return nil, fmt.Errorf("invalid date format for active_on in row %d: %s", rowIndex+2, row.Cells[4].String())
+					fmt.Println("Error parsing date:", err)
+					continue // Skip this entry but continue processing
 				}
 				user.ActiveOn = &activeOn
 			}
 		}
 
 		// Validate required fields
-		if user.Name == "" || user.Email == "" || user.PhoneNumber == "" {
-			return nil, fmt.Errorf("invalid data at row %d: name, email, and phone number are required fields", rowIndex+2)
+		if user.Name == "" || user.Email == "" || user.PhoneNumber == "" || user.Status == "" {
+			return nil, fmt.Errorf("invalid data at row %d: name, email, phone number, and status are required fields", rowIndex+2)
 		}
 
 		users = append(users, user)
